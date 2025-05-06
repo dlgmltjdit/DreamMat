@@ -60,8 +60,8 @@ class StableDiffusionLightGuidance(BaseObject):
         condition_scale: float = 1.5
         control_anneal_start_step: Optional[int] = None
         control_anneal_end_scale: Optional[float] = None
-        control_types: List = field(default_factory=lambda: ['depth', 'canny'])  
-        condition_scales: List = field(default_factory=lambda: [1.0, 1.0])
+        control_types: List = field(default_factory=lambda: ['depth', 'canny', 'segmentation'])  
+        condition_scales: List = field(default_factory=lambda: [1.0, 1.0, 1.0])
         condition_scales_anneal: List = field(default_factory=lambda: [1.0, 1.0])
         p2p_condition_type: str = 'p2p'
         canny_lower_bound: int = 50
@@ -104,6 +104,8 @@ class StableDiffusionLightGuidance(BaseObject):
                     controlnet_name_or_path: str = "lllyasviel/control_v11f1p_sd15_depth"
                 elif control_type == 'normal':
                     controlnet_name_or_path: str = "lllyasviel/control_v11p_sd15_normalbae"
+                elif control_type == 'segmentation':
+                    controlnet_name_or_path: str = "lllyasviel/control_v11p_sd15_seg"
                 else:
                     threestudio.info(f"unsupported controlnet type")
                     exit(1)
@@ -516,16 +518,15 @@ class StableDiffusionLightGuidance(BaseObject):
         return latents
 
     def prepare_image_cond(self, control_type, cond_rgb: Float[Tensor, "B H W C"]):
-        if control_type == 'normal':
+        if control_type in ['normal', 'light', 'segmentation']:
             control = cond_rgb.permute(0, 3, 1, 2)
         elif control_type == 'depth':
             control = cond_rgb.permute(0, 3, 1, 2)
             control = control.repeat(1, 3, 1, 1)
-        elif control_type == 'light':
-            control = cond_rgb.permute(0, 3, 1, 2)
         else:
             threestudio.info(f"unsupported controlnet type")
             exit(1)
+
         if control.shape[2]!=self.cfg.height:
             return F.interpolate(
                 control, (512, 512), mode="bilinear", align_corners=False
@@ -555,6 +556,7 @@ class StableDiffusionLightGuidance(BaseObject):
             cond_depth = kwargs.get('cond_depth', None)
             cond_light = kwargs.get('condition_map',None)
             cond_normal = kwargs.get('cond_normal',None)
+            cond_seg = kwargs.get('cond_seg', None)
             for k in range(len(self.cfg.control_types)):
                 control_type = self.cfg.control_types[k]
                 if control_type == 'depth':
@@ -564,6 +566,8 @@ class StableDiffusionLightGuidance(BaseObject):
                 elif control_type == 'light':
                     control_cond = kwargs.get('condition_map')
                     control_cond = self.prepare_image_cond(control_type, cond_light)
+                elif control_type == 'segmentation':
+                    control_cond = self.prepare_image_cond(control_type, cond_seg)
                 else:
                     control_cond = self.prepare_image_cond(control_type, cond_rgb)
                 image_cond.append(control_cond)
