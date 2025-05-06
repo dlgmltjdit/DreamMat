@@ -194,7 +194,7 @@ class RandomCameraIterableDataset(IterableDataset, Updateable):
         # convert spherical coordinates to cartesian coordinates
         # right hand coordinate system, x back, y right, z up
         # elevation in (-90, 90), azimuth from +x to +y in (-180, 180)
-        camera_positions: Float[Tensor, "B 3"] = torch.stack(
+        camera_positions = torch.stack(
             [
                 camera_distances * torch.cos(elevation) * torch.cos(azimuth),
                 camera_distances * torch.cos(elevation) * torch.sin(azimuth),
@@ -204,25 +204,25 @@ class RandomCameraIterableDataset(IterableDataset, Updateable):
         )
 
         # default scene center at origin
-        center: Float[Tensor, "B 3"] = torch.zeros_like(camera_positions)
+        center = torch.zeros_like(camera_positions)
         # default camera up direction as +z
-        up: Float[Tensor, "B 3"] = torch.as_tensor([0, 0, 1], dtype=torch.float32)[
+        up = torch.as_tensor([0, 0, 1], dtype=torch.float32)[
             None, :
         ].repeat(self.batch_size, 1)
 
         # sample camera perturbations from a uniform distribution [-camera_perturb, camera_perturb]
-        camera_perturb: Float[Tensor, "B 3"] = (
+        camera_perturb = (
             torch.rand(self.batch_size, 3) * 2 * self.cfg.camera_perturb
             - self.cfg.camera_perturb
         )
         camera_positions = camera_positions + camera_perturb
         # sample center perturbations from a normal distribution with mean 0 and std center_perturb
-        center_perturb: Float[Tensor, "B 3"] = (
+        center_perturb = (
             torch.randn(self.batch_size, 3) * self.cfg.center_perturb
         )
         center = center + center_perturb
         # sample up perturbations from a normal distribution with mean 0 and std up_perturb
-        up_perturb: Float[Tensor, "B 3"] = (
+        up_perturb = (
             torch.randn(self.batch_size, 3) * self.cfg.up_perturb
         )
         up = up + up_perturb
@@ -245,13 +245,13 @@ class RandomCameraIterableDataset(IterableDataset, Updateable):
 
         if self.cfg.light_sample_strategy == "dreamfusion":
             # sample light direction from a normal distribution with mean camera_position and std light_position_perturb
-            light_direction: Float[Tensor, "B 3"] = F.normalize(
+            light_direction = F.normalize(
                 camera_positions
                 + torch.randn(self.batch_size, 3) * self.cfg.light_position_perturb,
                 dim=-1,
             )
             # get light position by scaling light direction by light distance
-            light_positions: Float[Tensor, "B 3"] = (
+            light_positions = (
                 light_direction * light_distances[:, None]
             )
         elif self.cfg.light_sample_strategy == "magic3d":
@@ -290,21 +290,21 @@ class RandomCameraIterableDataset(IterableDataset, Updateable):
                 f"Unknown light sample strategy: {self.cfg.light_sample_strategy}"
             )
 
-        lookat: Float[Tensor, "B 3"] = F.normalize(center - camera_positions, dim=-1)
-        right: Float[Tensor, "B 3"] = F.normalize(torch.cross(lookat, up), dim=-1)
+        lookat = F.normalize(center - camera_positions, dim=-1)
+        right = F.normalize(torch.cross(lookat, up), dim=-1)
         up = F.normalize(torch.cross(right, lookat), dim=-1)
-        c2w3x4: Float[Tensor, "B 3 4"] = torch.cat(
+        c2w3x4 = torch.cat(
             [torch.stack([right, up, -lookat], dim=-1), camera_positions[:, :, None]],
             dim=-1,
         )
-        c2w: Float[Tensor, "B 4 4"] = torch.cat(
+        c2w = torch.cat(
             [c2w3x4, torch.zeros_like(c2w3x4[:, :1])], dim=1
         )
         c2w[:, 3, 3] = 1.0
 
         # get directions by dividing directions_unit_focal by focal length
         focal_length: Float[Tensor, "B"] = 0.5 * self.height / torch.tan(0.5 * fovy)
-        directions: Float[Tensor, "B H W 3"] = self.directions_unit_focal[
+        directions = self.directions_unit_focal[
             None, :, :, :
         ].repeat(self.batch_size, 1, 1, 1)
         directions[:, :, :, :2] = (
@@ -314,7 +314,7 @@ class RandomCameraIterableDataset(IterableDataset, Updateable):
         # Importance note: the returned rays_d MUST be normalized!
         rays_o, rays_d = get_rays(directions, c2w, keepdim=True)
 
-        proj_mtx: Float[Tensor, "B 4 4"] = get_projection_matrix(
+        proj_mtx = get_projection_matrix(
             fovy, self.width / self.height, 0.1, 1000.0
         )  # FIXME: hard-coded near and far
         mvp_mtx, w2c= get_mvp_matrix(c2w, proj_mtx)
@@ -354,7 +354,7 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
         # convert spherical coordinates to cartesian coordinates
         # right hand coordinate system, x back, y right, z up
         # elevation in (-90, 90), azimuth from +x to +y in (-180, 180)
-        camera_positions: Float[Tensor, "B 3"] = torch.stack(
+        camera_positions = torch.stack(
             [
                 camera_distances * torch.cos(elevation) * torch.cos(azimuth),
                 camera_distances * torch.cos(elevation) * torch.sin(azimuth),
@@ -364,45 +364,45 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
         )
 
         # default scene center at origin
-        center: Float[Tensor, "B 3"] = torch.zeros_like(camera_positions)
+        center = torch.zeros_like(camera_positions)
         # default camera up direction as +z
-        up: Float[Tensor, "B 3"] = torch.as_tensor([0, 0, 1], dtype=torch.float32)[None, :].repeat(self.batch_size, 1)
+        up = torch.as_tensor([0, 0, 1], dtype=torch.float32)[None, :].repeat(self.batch_size, 1)
 
         # sample camera perturbations from a uniform distribution [-camera_perturb, camera_perturb]
-        camera_perturb: Float[Tensor, "B 3"] = self.camera_perturbs[view_id,...]
+        camera_perturb = self.camera_perturbs[view_id,...]
         camera_positions = camera_positions + camera_perturb
         # sample center perturbations from a normal distribution with mean 0 and std center_perturb
-        center_perturb: Float[Tensor, "B 3"] = self.center_perturbs[view_id,...]
+        center_perturb = self.center_perturbs[view_id,...]
         center = center + center_perturb
         # sample up perturbations from a normal distribution with mean 0 and std up_perturb
-        up_perturb: Float[Tensor, "B 3"] = self.up_perturbs[view_id,...]
+        up_perturb = self.up_perturbs[view_id,...]
         up = up + up_perturb
 
         # sample fovs from a uniform distribution bounded by fov_range
         fovy_deg: Float[Tensor, "B"] = self.fovy_degs[view_id]
         fovy = fovy_deg * math.pi / 180
 
-        lookat: Float[Tensor, "B 3"] = F.normalize(center - camera_positions, dim=-1)
-        right: Float[Tensor, "B 3"] = F.normalize(torch.cross(lookat, up), dim=-1)
+        lookat = F.normalize(center - camera_positions, dim=-1)
+        right = F.normalize(torch.cross(lookat, up), dim=-1)
         up = F.normalize(torch.cross(right, lookat), dim=-1)
-        c2w3x4: Float[Tensor, "B 3 4"] = torch.cat(
+        c2w3x4 = torch.cat(
             [torch.stack([right, up, -lookat], dim=-1), camera_positions[:, :, None]],
             dim=-1,
         )
-        c2w: Float[Tensor, "B 4 4"] = torch.cat(
+        c2w = torch.cat(
             [c2w3x4, torch.zeros_like(c2w3x4[:, :1])], dim=1
         )
         c2w[:, 3, 3] = 1.0
 
         # get directions by dividing directions_unit_focal by focal length
         focal_length: Float[Tensor, "B"] = 0.5 * self.height / torch.tan(0.5 * fovy)
-        directions: Float[Tensor, "B H W 3"] = self.directions_unit_focal[
+        directions = self.directions_unit_focal[
             None, :, :, :
         ].repeat(self.batch_size, 1, 1, 1)
         directions[:, :, :, :2] = (
             directions[:, :, :, :2] / focal_length[:, None, None, None]
         )
-        proj_mtx: Float[Tensor, "B 4 4"] = get_projection_matrix(
+        proj_mtx = get_projection_matrix(
             fovy, self.width / self.height, 0.1, 1000.0
         )  # FIXME: hard-coded near and far
         mvp_mtx, w2c= get_mvp_matrix(c2w, proj_mtx)
@@ -460,20 +460,20 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
 
         if self.cfg.blender_generate:
 
-            elevation_deg: Float[Tensor, "B 128"] = self.elevation_degs
-            elevation: Float[Tensor, "B 128"] = elevation_deg * math.pi / 180
+            elevation_deg = self.elevation_degs
+            elevation = elevation_deg * math.pi / 180
 
             
-            azimuth_deg: Float[Tensor, "B 128"] = self.azimuth_degs
-            azimuth: Float[Tensor, "B 128"] = azimuth_deg * math.pi / 180
+            azimuth_deg = self.azimuth_degs
+            azimuth = azimuth_deg * math.pi / 180
             
 
-            camera_distances: Float[Tensor, "B 128"] = self.fix_camera_distances
+            camera_distances = self.fix_camera_distances
 
             # convert spherical coordinates to cartesian coordinates
             # right hand coordinate system, x back, y right, z up
             # elevation in (-90, 90), azimuth from +x to +y in (-180, 180)
-            camera_positions: Float[Tensor, "B 128 3"] = torch.stack(
+            camera_positions = torch.stack(
                 [
                     camera_distances * torch.cos(elevation) * torch.cos(azimuth),
                     camera_distances * torch.cos(elevation) * torch.sin(azimuth),
@@ -481,33 +481,47 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
                 ],
                 dim=-1,
             )
-            camera_perturb: Float[Tensor, "B 128 3"] = self.camera_perturbs
+            camera_perturb = self.camera_perturbs
             camera_positions = camera_positions + camera_perturb
             # # sample center perturbations from a normal distribution with mean 0 and std center_perturb
-            center_perturb: Float[Tensor, "B 128 3"] = self.center_perturbs
-            center: Float[Tensor, "B 128 3"] = torch.zeros_like(camera_positions)
+            center_perturb = self.center_perturbs
+            center = torch.zeros_like(camera_positions)
             center = center + center_perturb
-            up: Float[Tensor, "B 128 3"] = torch.as_tensor([0, 0, 1], dtype=torch.float32)[None, :].repeat(self.batch_size, 1).expand(128, -1)
-            lookat: Float[Tensor, "B 128 3"] = F.normalize(center - camera_positions, dim=-1)
-            right: Float[Tensor, "B 128 3"] = F.normalize(torch.cross(lookat, up), dim=-1)
+            up = torch.as_tensor([0, 0, 1], dtype=torch.float32)[None, :].repeat(self.batch_size, 1).expand(128, -1)
+            lookat = F.normalize(center - camera_positions, dim=-1)
+            right = F.normalize(torch.cross(lookat, up), dim=-1)
             up = F.normalize(torch.cross(right, lookat), dim=-1)
-            c2w3x4: Float[Tensor, "B 128 3 4"] = torch.cat(
+            c2w3x4 = torch.cat(
                 [torch.stack([right, up, -lookat], dim=-1), camera_positions[:, :, None]],
                 dim=-1,
             )
-            c2w: Float[Tensor, "B 128 4 4"] = torch.cat(
+            c2w = torch.cat(
                 [c2w3x4, torch.zeros_like(c2w3x4[:, :1])], dim=1
             )
             c2w[:, 3, 3] = 1.0
-            fovy_deg: Float[Tensor, "B 128"] = self.fovy_degs
+            fovy_deg = self.fovy_degs
             fovy = fovy_deg * math.pi / 180
-            focal_length: Float[Tensor, "B 128"] = 0.5 * self.height / torch.tan(0.5 * fovy)
+            focal_length = 0.5 * self.height / torch.tan(0.5 * fovy)
 
             
             data = {}
             data['v_pos']     = self.mesh.v_pos.cpu().numpy()
             #data['v_uv']      = self.mesh.v_uv.cpu().numpy()
             data['t_pos_idx'] = self.mesh.t_pos_idx.cpu().numpy()
+            # --- Add v_color to pickle data if it exists --- 
+            if hasattr(self.mesh, 'v_color') and self.mesh.v_color is not None:
+                 data['v_color'] = self.mesh.v_color.cpu().numpy()
+                 threestudio.info("Added v_color to pickle data.") # Add info message
+            else:
+                 # Handle the case where v_color is missing - crucial for blender script
+                 threestudio.warn("v_color not found in mesh, cannot add to pickle. Blender script might fail if it requires v_color.")
+                 # Option 1: Add a placeholder (e.g., array of ones) - might hide issues
+                 # num_vertices = data['v_pos'].shape[0]
+                 # data['v_color'] = np.ones((num_vertices, 4), dtype=np.float32) 
+                 # Option 2: Let it be missing - blender script needs robust checking (already added)
+                 pass
+            # --- End of adding v_color ---
+
             data['width']     = self.width
             data['height']    = self.height
             data['focal_length'] = focal_length.cpu().numpy()
@@ -517,17 +531,24 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
             pkl_path = 'temp/render_fixview_temp.pkl'
             with open(pkl_path, 'wb') as f:
                 pickle.dump(data, f)
-            command = (
-                f"blender -b -P ./threestudio/data/blender_script_fixview.py --"
-                f" --param_dir {pkl_path}"
-                f" --env_dir {envmap_dir}"
-                f" --output_dir {self.temp_image_save_dir}"
-                f" --num_images {self.cfg.fix_view_num}"
-            )
-            print(command)
+            cmd = f'blender -b -P ./threestudio/data/blender_script_fixview.py -- --param_dir {pkl_path} --env_dir {envmap_dir} --output_dir {self.temp_image_save_dir} --num_images {self.cfg.fix_view_num} --seg_model_path "load/shapes/objs/knight_seg.glb"'
+            print(cmd)
             print("pre-rendering light conditions...please wait for about 15min")
-            subprocess.run(command, shell=True,stdout= subprocess.DEVNULL)
-            print("rendering done")
+            # Execute the command and capture output
+            process = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            # Print stdout and stderr
+            print("--- Blender Script STDOUT ---")
+            print(process.stdout)
+            print("--- Blender Script STDERR ---")
+            print(process.stderr)
+            print("---------------------------")
+            # Check return code
+            if process.returncode != 0:
+                print(f"Blender script failed with return code {process.returncode}")
+                # Optionally raise an exception or handle the error
+                # raise RuntimeError(f"Blender script failed. Check logs above.")
+            else:
+                print("rendering done")
 
         def loadrgb(imgpath,dim):
             img = cv2.imread(imgpath,cv2.IMREAD_UNCHANGED)
@@ -539,11 +560,16 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
 
         def loaddepth(imgpath,dim):
             depth = cv2.imread(imgpath, cv2.IMREAD_ANYDEPTH)/1000
+            # Check if image loading failed
+            if depth is None:
+                print(f"Error: Could not load depth image at {imgpath}")
+                # Return a zero array or handle appropriately
+                return np.zeros((dim[1], dim[0], 1), dtype=np.float32)
             depth = cv2.resize(depth, dim, interpolation = cv2.INTER_NEAREST)
             object_mask = depth>0
                 
             if object_mask.sum()<=0:
-                print(imgpath)
+                print(f"Warning: No object mask found in depth image {imgpath}")
                 return depth[...,None]
 
             min_val=0.3
@@ -556,15 +582,22 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
             depth[object_mask] = (1 - min_val) *(depth_inv[object_mask] - depth_min) / (depth_max - depth_min + 1e-6) + min_val
             return depth[...,None]
         
-        self.depths: Float[Tensor, "128 256 256 1"]=torch.zeros((128,self.height,self.width,1))    
-        self.normals: Float[Tensor, "128 256 256 3"]=torch.ones((128,self.height,self.width,3))
-        self.lightmaps:Float[Tensor, "128 5 256 256 18"]=torch.zeros((128,5,self.height,self.width,18))
+        self.depths = torch.zeros((128,self.height,self.width,1))
+        self.normals = torch.ones((128,self.height,self.width,3))
+        self.lightmaps = torch.zeros((128,5,self.height,self.width,18))
+
+        self.segs = torch.ones((128,self.height,self.width,3)) # 추가된 코드
+
         dim = (self.width, self.height)
         for view_idx in range(self.cfg.fix_view_num):
             depth_path =self.temp_image_save_dir+"/depth/"+f"{view_idx:03d}.png"
             normal_path = self.temp_image_save_dir+"/normal/"+f"{view_idx:03d}.png"
+            seg_path = self.temp_image_save_dir+"/seg/"+f"{view_idx:03d}.png"
             self.depths[view_idx] = torch.from_numpy(loaddepth(depth_path, dim))
             self.normals[view_idx]=torch.from_numpy(loadrgb(normal_path,dim))
+
+            self.segs[view_idx] = torch.from_numpy(loadrgb(seg_path, dim)) # 추가된 코드
+
             for env_idx in range(1,6):
                 light_path_m0r0 =    self.temp_image_save_dir+"/light/"+f"{view_idx:03d}_m0.0r0.0_env"+str(env_idx)+".png"
                 light_path_m0rhalf = self.temp_image_save_dir+"/light/"+f"{view_idx:03d}_m0.0r0.5_env"+str(env_idx)+".png"
@@ -736,7 +769,7 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
         # convert spherical coordinates to cartesian coordinates
         # right hand coordinate system, x back, y right, z up
         # elevation in (-90, 90), azimuth from +x to +y in (-180, 180)
-        camera_positions: Float[Tensor, "B 3"] = torch.stack(
+        camera_positions = torch.stack(
             [
                 camera_distances * torch.cos(elevation) * torch.cos(azimuth),
                 camera_distances * torch.cos(elevation) * torch.sin(azimuth),
@@ -746,39 +779,39 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
         )
 
         # default scene center at origin
-        center: Float[Tensor, "B 3"] = torch.zeros_like(camera_positions)
+        center = torch.zeros_like(camera_positions)
         # default camera up direction as +z
-        up: Float[Tensor, "B 3"] = torch.as_tensor([0, 0, 1], dtype=torch.float32)[None, :].repeat(self.batch_size, 1)
+        up = torch.as_tensor([0, 0, 1], dtype=torch.float32)[None, :].repeat(self.batch_size, 1)
 
         # sample camera perturbations from a uniform distribution [-camera_perturb, camera_perturb]
-        camera_perturb: Float[Tensor, "B 3"] = self.camera_perturbs[view_id,...]
+        camera_perturb = self.camera_perturbs[view_id,...]
         camera_positions = camera_positions + camera_perturb
         # sample center perturbations from a normal distribution with mean 0 and std center_perturb
-        center_perturb: Float[Tensor, "B 3"] = self.center_perturbs[view_id,...]
+        center_perturb = self.center_perturbs[view_id,...]
         center = center + center_perturb
         # sample up perturbations from a normal distribution with mean 0 and std up_perturb
-        up_perturb: Float[Tensor, "B 3"] = self.up_perturbs[view_id,...]
+        up_perturb = self.up_perturbs[view_id,...]
         up = up + up_perturb
 
         # sample fovs from a uniform distribution bounded by fov_range
         fovy_deg: Float[Tensor, "B"] = self.fovy_degs[view_id]
         fovy = fovy_deg * math.pi / 180
 
-        lookat: Float[Tensor, "B 3"] = F.normalize(center - camera_positions, dim=-1)
-        right: Float[Tensor, "B 3"] = F.normalize(torch.cross(lookat, up), dim=-1)
+        lookat = F.normalize(center - camera_positions, dim=-1)
+        right = F.normalize(torch.cross(lookat, up), dim=-1)
         up = F.normalize(torch.cross(right, lookat), dim=-1)
-        c2w3x4: Float[Tensor, "B 3 4"] = torch.cat(
+        c2w3x4 = torch.cat(
             [torch.stack([right, up, -lookat], dim=-1), camera_positions[:, :, None]],
             dim=-1,
         )
-        c2w: Float[Tensor, "B 4 4"] = torch.cat(
+        c2w = torch.cat(
             [c2w3x4, torch.zeros_like(c2w3x4[:, :1])], dim=1
-        ) 
+        )
         c2w[:, 3, 3] = 1.0
 
         # get directions by dividing directions_unit_focal by focal length
         focal_length: Float[Tensor, "B"] = 0.5 * self.height / torch.tan(0.5 * fovy)
-        directions: Float[Tensor, "B H W 3"] = self.directions_unit_focal[
+        directions = self.directions_unit_focal[
             None, :, :, :
         ].repeat(self.batch_size, 1, 1, 1)
         directions[:, :, :, :2] = (
@@ -788,7 +821,7 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
         # Importance note: the returned rays_d MUST be normalized!
         rays_o, rays_d = get_rays(directions, c2w, keepdim=True)
 
-        proj_mtx: Float[Tensor, "B 4 4"] = get_projection_matrix(
+        proj_mtx = get_projection_matrix(
             fovy, self.width / self.height, 0.1, 1000.0
         )  # FIXME: hard-coded near and far
         mvp_mtx, w2c= get_mvp_matrix(c2w, proj_mtx)
@@ -799,7 +832,13 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
         cur_depth = self.depths[view_id,...]
         cur_normal = self.normals[view_id,...]
         cur_light = self.lightmaps[view_id,env_id,...]
-        condition_map = torch.cat((cur_depth,cur_normal,cur_light),-1)
+
+        cur_seg = self.segs[view_id,...] # 추가된 코드
+        
+        # (원본) condition_map = torch.cat((cur_depth,cur_normal,cur_light),-1)
+
+        # *수정* condition_map에 segmentation map 추가
+        condition_map = torch.cat((cur_depth,cur_normal,cur_seg,cur_light),-1) # (H, W, 25)
 
         return {
             "view_id":view_id,
@@ -852,7 +891,7 @@ class RandomCameraDataset(Dataset):
         # convert spherical coordinates to cartesian coordinates
         # right hand coordinate system, x back, y right, z up
         # elevation in (-90, 90), azimuth from +x to +y in (-180, 180)
-        camera_positions: Float[Tensor, "B 3"] = torch.stack(
+        camera_positions = torch.stack(
             [
                 camera_distances * torch.cos(elevation) * torch.cos(azimuth),
                 camera_distances * torch.cos(elevation) * torch.sin(azimuth),
@@ -862,9 +901,9 @@ class RandomCameraDataset(Dataset):
         )
 
         # default scene center at origin
-        center: Float[Tensor, "B 3"] = torch.zeros_like(camera_positions)
+        center = torch.zeros_like(camera_positions)
         # default camera up direction as +z
-        up: Float[Tensor, "B 3"] = torch.as_tensor([0, 0, 1], dtype=torch.float32)[
+        up = torch.as_tensor([0, 0, 1], dtype=torch.float32)[
             None, :
         ].repeat(self.cfg.eval_batch_size, 1)
 
@@ -873,16 +912,16 @@ class RandomCameraDataset(Dataset):
         )
         fovy = fovy_deg * math.pi / 180
 
-        light_positions: Float[Tensor, "B 3"] = camera_positions
+        light_positions = camera_positions
 
-        lookat: Float[Tensor, "B 3"] = F.normalize(center - camera_positions, dim=-1)
-        right: Float[Tensor, "B 3"] = F.normalize(torch.cross(lookat, up), dim=-1)
+        lookat = F.normalize(center - camera_positions, dim=-1)
+        right = F.normalize(torch.cross(lookat, up), dim=-1)
         up = F.normalize(torch.cross(right, lookat), dim=-1)
-        c2w3x4: Float[Tensor, "B 3 4"] = torch.cat(
+        c2w3x4 = torch.cat(
             [torch.stack([right, up, -lookat], dim=-1), camera_positions[:, :, None]],
             dim=-1,
         )
-        c2w: Float[Tensor, "B 4 4"] = torch.cat(
+        c2w = torch.cat(
             [c2w3x4, torch.zeros_like(c2w3x4[:, :1])], dim=1
         )
         c2w[:, 3, 3] = 1.0
@@ -894,7 +933,7 @@ class RandomCameraDataset(Dataset):
         directions_unit_focal = get_ray_directions(
             H=self.cfg.eval_height, W=self.cfg.eval_width, focal=1.0
         )
-        directions: Float[Tensor, "B H W 3"] = directions_unit_focal[
+        directions = directions_unit_focal[
             None, :, :, :
         ].repeat(self.n_views, 1, 1, 1)
         directions[:, :, :, :2] = (
@@ -902,7 +941,7 @@ class RandomCameraDataset(Dataset):
         )
 
         rays_o, rays_d = get_rays(directions, c2w, keepdim=True)
-        proj_mtx: Float[Tensor, "B 4 4"] = get_projection_matrix(
+        proj_mtx = get_projection_matrix(
             fovy, self.cfg.eval_width / self.cfg.eval_height, 0.1, 1000.0
         )  # FIXME: hard-coded near and far
         mvp_mtx, w2c= get_mvp_matrix(c2w, proj_mtx)
@@ -1001,4 +1040,3 @@ class RandomCameraDataModule(pl.LightningDataModule):
         return self.general_loader(
             self.test_dataset, batch_size=1, collate_fn=self.test_dataset.collate
         )
-
