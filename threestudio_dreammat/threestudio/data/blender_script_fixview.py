@@ -26,6 +26,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--param_dir", type=str, required=True)
 parser.add_argument("--env_dir", type=str, required=True)
 parser.add_argument("--output_dir", type=str, required=True)
+parser.add_argument("--seg_model_path", type=str)
 parser.add_argument("--engine", type=str, default="CYCLES", choices=["CYCLES", "BLENDER_EEVEE"])
 parser.add_argument("--camera_type", type=str, default='fixed')
 parser.add_argument("--num_images", type=int, required=True)
@@ -312,11 +313,15 @@ def save_images(object_file: str) -> None:
     promptdir=os.path.join(args.output_dir)
     depthdir=os.path.join(args.output_dir,"depth")
     normaldir=os.path.join(args.output_dir,"normal")
-    
+    segdir = os.path.join(args.output_dir, "seg")
+
     if not os.path.exists(lightdir): Path(lightdir).mkdir(exist_ok=True, parents=True)
     if not os.path.exists(promptdir): Path(promptdir).mkdir(exist_ok=True, parents=True)
     if not os.path.exists(depthdir): Path(depthdir).mkdir(exist_ok=True, parents=True)
     if not os.path.exists(normaldir): Path(normaldir).mkdir(exist_ok=True, parents=True)
+    if args.seg_model_path and not os.path.exists(segdir):
+        Path(segdir).mkdir(exist_ok=True, parents=True)
+
     param = read_pickle(object_file)
     reset_scene()
     # load the object
@@ -329,6 +334,39 @@ def save_images(object_file: str) -> None:
     # update mesh data from given points
     n_mesh_1.from_pydata(param['v_pos'],[],param['t_pos_idx'])
     n_mesh_1.update()
+
+    # Load segmentation model if path is provided
+    seg_obj = None
+    if args.seg_model_path:
+        try:
+            # Store original objects
+            original_objs = set(bpy.data.objects)
+            load_object(args.seg_model_path)
+            # Find the newly added object(s)
+            loaded_objs = set(bpy.data.objects) - original_objs
+            if not loaded_objs:
+                print(f"Warning: No objects loaded from {args.seg_model_path}")
+            else:
+                # Assuming the main mesh is the first loaded object or the one with geometry
+                for obj in loaded_objs:
+                    if obj.type == 'MESH':
+                        seg_obj = obj
+                        break
+                if not seg_obj:
+                     print(f"Warning: No MESH object found in {args.seg_model_path}")
+                else:
+                    print(f"Loaded segmentation model: {seg_obj.name}")
+                    # segmentation object 중심 이동
+                    bpy.context.view_layer.update()
+                    bbox_min, bbox_max = scene_bbox(seg_obj)
+                    offset = -(bbox_min + bbox_max) / 2
+                    seg_obj.location += offset
+
+                    # Initially hide the segmentation object for rendering
+                    seg_obj.hide_render = True
+        except Exception as e:
+            print(f"Error loading segmentation model from {args.seg_model_path}: {e}")
+            seg_obj = None
 
     # set smooth mesh
     for polygon in n_mesh_1.polygons:
@@ -343,6 +381,40 @@ def save_images(object_file: str) -> None:
     mat = create_material()
     for mesh in scene_meshes():
         mesh.active_material = mat
+
+    # Create segmentation material if seg_obj exists
+    seg_mat = None
+    if seg_obj:
+        seg_mat = bpy.data.materials.new(name="SegmentationMaterial")
+        seg_mat.use_nodes = True
+        seg_tree = seg_mat.node_tree
+        seg_nodes = seg_tree.nodes
+        # Clear default nodes
+        for node in seg_nodes:
+            seg_nodes.remove(node)
+        # Add Emission node connected to Material Output
+        emission_node = seg_nodes.new(type='ShaderNodeEmission')
+        output_node = seg_nodes.new(type='ShaderNodeOutputMaterial')
+        # Add Vertex Color node to get vertex colors
+        # This assumes the GLB loader correctly creates a vertex color layer
+        vc_node = seg_nodes.new(type='ShaderNodeVertexColor')
+        # Try to use the first available vertex color layer name if the object has one
+        if seg_obj and seg_obj.data.vertex_colors:
+            vc_node.layer_name = seg_obj.data.vertex_colors[0].name
+            print(f"Using vertex color layer: {vc_node.layer_name} for segmentation material")
+        else:
+            # Fallback or default name if needed, though ideally the layer exists
+            print("Warning: Segmentation object has no vertex color layer. Using default or first found.")
+            # vc_node.layer_name = "Col" # Keep a fallback? Or rely on default?
+
+        seg_tree.links.new(vc_node.outputs['Color'], emission_node.inputs['Color'])
+        seg_tree.links.new(emission_node.outputs['Emission'], output_node.inputs['Surface'])
+
+        # Assign material to seg_obj
+        if seg_obj.data.materials:
+            seg_obj.data.materials[0] = seg_mat
+        else:
+            seg_obj.data.materials.append(seg_mat)
 
     # load env_map
     bpy.context.scene.world.use_nodes = True
@@ -410,12 +482,32 @@ def save_images(object_file: str) -> None:
     camera = bpy.data.objects["Camera"]
     render.resolution_x = param['width']
     render.resolution_y = param['height']
+
+    # Store original render settings to restore later
+    original_color_mode = render.image_settings.color_mode
+    original_color_depth = render.image_settings.color_depth
+    original_view_transform = bpy.context.scene.view_settings.view_transform
+    original_film_transparent = scene.render.film_transparent
+    original_cycles_samples = scene.cycles.samples
+    original_max_bounces = scene.cycles.max_bounces # Store original bounces
+
+    # Store original world background
+    world_tree = bpy.context.scene.world.node_tree
+    back_node = world_tree.nodes['Background']
+    original_bg_color = back_node.inputs['Color'].default_value[:]
+    original_bg_strength = back_node.inputs['Strength'].default_value
+
     for i in range(args.num_images):
         # set camera
-        print(args.num_images)
+        print(f"Rendering image {i+1}/{args.num_images}")
         lens_scale = render.resolution_x / cam.data.sensor_width
         cam.data.lens = float(param['focal_length'].flatten()[i])/lens_scale# focus_length transorm
         camera.matrix_world = Matrix(cam_poses[i])
+
+        # Ensure correct object visibility for non-segmentation renders
+        obj_1.hide_render = False
+        if seg_obj:
+            seg_obj.hide_render = True
 
         # output depth image
         bpy.context.scene.view_settings.view_transform = "Raw"
@@ -439,16 +531,76 @@ def save_images(object_file: str) -> None:
         scene.render.filepath = os.path.abspath(render_path)
         bpy.ops.render.render(write_still=True)
 
-    bpy.context.scene.view_settings.view_transform = default_color_management
-    render.image_settings.color_mode = "RGBA"
-    render.image_settings.color_depth = "8"
+        # --- Render Segmentation Map if seg_obj exists ---
+        if seg_obj:
+            print(f"Rendering segmentation map {i+1}/{args.num_images}")
+            # Hide original object, show segmentation object
+            obj_1.hide_render = True
+            seg_obj.hide_render = False
+
+            # Set render settings for segmentation (emission only)
+            bpy.context.scene.view_settings.view_transform = 'Raw' # Use Raw to avoid color management
+            render.image_settings.color_mode = 'RGB' # Output color
+            render.image_settings.color_depth = '8'
+            scene.render.film_transparent = True # Transparent background
+            scene.cycles.samples = 1 # Need minimal samples for emission
+            scene.cycles.max_bounces = 0 # No light bounces needed
+
+            # Set world background to black and strength 0
+            back_node.inputs['Color'].default_value = (0, 0, 0, 1)
+            back_node.inputs['Strength'].default_value = 0.0
+
+            # Use simple composite link for direct color output
+            # Disconnect depth/normal nodes if necessary, connect Emission material output directly
+            # Assuming the render layer outputs the emission pass directly when set up like this.
+            # We connect the main image output which should now be the emission colors.
+            if composite_node.inputs['Image'].is_linked:
+                 tree.links.remove(composite_node.inputs['Image'].links[0])
+            tree.links.new(render_layer.outputs["Image"], composite_node.inputs[0])
+
+            render_path = os.path.join(segdir, f"{i:03d}.png")
+            scene.render.filepath = os.path.abspath(render_path)
+            bpy.ops.render.render(write_still=True)
+
+            # Restore object visibility
+            obj_1.hide_render = False
+            seg_obj.hide_render = True # Hide it again for subsequent light renders
+
+            # Restore original render settings
+            scene.render.film_transparent = original_film_transparent
+            scene.cycles.samples = original_cycles_samples
+            scene.cycles.max_bounces = original_max_bounces # Restore bounces
+            back_node.inputs['Color'].default_value = original_bg_color
+            back_node.inputs['Strength'].default_value = original_bg_strength
+            # Compositor link will be reset before the light renders below
+
+    # Restore settings before light rendering loop
+    bpy.context.scene.view_settings.view_transform = original_view_transform
+    render.image_settings.color_mode = original_color_mode
+    render.image_settings.color_depth = original_color_depth
+    # Ensure the main image is connected for light rendering
+    if composite_node.inputs['Image'].is_linked:
+        tree.links.remove(composite_node.inputs['Image'].links[0])
     tree.links.new(render_layer.outputs["Image"], composite_node.inputs[0])
+
+    # Ensure correct object visibility for light renders
+    obj_1.hide_render = False
+    if seg_obj:
+        seg_obj.hide_render = True
+
+    # Restore world background color/strength explicitly before light rendering loop if needed
+    back_node.inputs['Color'].default_value = original_bg_color
+    back_node.inputs['Strength'].default_value = original_bg_strength
+
     for env in range(0,5):
         env_map = bpy.data.images.load(os.path.join(map_path,'map'+str(env+1), 'map'+str(env+1)+".exr"))
         env_texture_node.image = env_map
+        # Restore background strength for environment map
+        back_node.inputs['Strength'].default_value = 1.0 # Or original strength if it wasn't 1
+
         for i in range(args.num_images):
             # set camera
-            print(args.num_images)
+            print(f"Rendering light image {i+1}/{args.num_images}, Env {env+1}/5")
             lens_scale = render.resolution_x / cam.data.sensor_width
             cam.data.lens = float(param['focal_length'].flatten()[i])/lens_scale# focus_length transorm
             camera.matrix_world = Matrix(cam_poses[i])
