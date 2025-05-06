@@ -105,7 +105,7 @@ class StableDiffusionLightGuidance(BaseObject):
                 elif control_type == 'normal':
                     controlnet_name_or_path: str = "lllyasviel/control_v11p_sd15_normalbae"
                 elif control_type == 'segmentation':
-                    controlnet_name_or_path: str = "lllyasviel/control_v11p_sd15_seg"
+                    controlnet_name_or_path: str = "thibaud/controlnet-sd21-ade20k-diffusers"
                 else:
                     threestudio.info(f"unsupported controlnet type")
                     exit(1)
