@@ -59,7 +59,7 @@ system:
     cache_dir: "model" # path to SD model
     pretrained_model_name_or_path: "stabilityai/stable-diffusion-2-1-base"
     controlnet_path: "model/controlnet" # path to controlnet
-    control_types: ['light']
+    control_types: ['light', 'segmentation']
     cond_scale: 1.05
     uncond_scale: [0, -1.0, -0.5, 2000]  
     null_scale: [0, 0.0, -0.5, 2000] 
@@ -67,8 +67,8 @@ system:
     min_step_percent: [500, 0.2, 0.02, 501]
     max_step_percent: [500, 0.8, 0.5, 501] 
     control_anneal_start_step: 700
-    condition_scales: [1.0] 
-    condition_scales_anneal: [0.8]
+    condition_scales: [1.0, 1.0] 
+    condition_scales_anneal: [0.8, 0.8]
 
 
   prompt_processor_type: "stable-diffusion-prompt-processor"

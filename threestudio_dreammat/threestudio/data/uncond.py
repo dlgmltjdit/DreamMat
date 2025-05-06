@@ -586,17 +586,22 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
         self.normals = torch.ones((128,self.height,self.width,3))
         self.lightmaps = torch.zeros((128,5,self.height,self.width,18))
 
-        self.segs = torch.ones((128,self.height,self.width,3)) # 추가된 코드
+        self.segs = torch.ones((128,self.height,self.width,3)) # 세그멘테이션 텐서 초기화
 
         dim = (self.width, self.height)
         for view_idx in range(self.cfg.fix_view_num):
-            depth_path =self.temp_image_save_dir+"/depth/"+f"{view_idx:03d}.png"
+            depth_path = self.temp_image_save_dir+"/depth/"+f"{view_idx:03d}.png"
             normal_path = self.temp_image_save_dir+"/normal/"+f"{view_idx:03d}.png"
             seg_path = self.temp_image_save_dir+"/seg/"+f"{view_idx:03d}.png"
+            
             self.depths[view_idx] = torch.from_numpy(loaddepth(depth_path, dim))
-            self.normals[view_idx]=torch.from_numpy(loadrgb(normal_path,dim))
-
-            self.segs[view_idx] = torch.from_numpy(loadrgb(seg_path, dim)) # 추가된 코드
+            self.normals[view_idx] = torch.from_numpy(loadrgb(normal_path, dim))
+            
+            # 세그멘테이션 맵 로드 (파일이 존재하는 경우에만)
+            if os.path.exists(seg_path):
+                self.segs[view_idx] = torch.from_numpy(loadrgb(seg_path, dim))
+            else:
+                print(f"Warning: Segmentation file not found at {seg_path}")
 
             for env_idx in range(1,6):
                 light_path_m0r0 =    self.temp_image_save_dir+"/light/"+f"{view_idx:03d}_m0.0r0.0_env"+str(env_idx)+".png"

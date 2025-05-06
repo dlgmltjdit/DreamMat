@@ -62,7 +62,7 @@ class StableDiffusionLightGuidance(BaseObject):
         control_anneal_end_scale: Optional[float] = None
         control_types: List = field(default_factory=lambda: ['depth', 'canny', 'segmentation'])  
         condition_scales: List = field(default_factory=lambda: [1.0, 1.0, 1.0])
-        condition_scales_anneal: List = field(default_factory=lambda: [1.0, 1.0])
+        condition_scales_anneal: List = field(default_factory=lambda: [1.0, 1.0, 1.0])
         p2p_condition_type: str = 'p2p'
         canny_lower_bound: int = 50
         canny_upper_bound: int = 100
@@ -518,7 +518,11 @@ class StableDiffusionLightGuidance(BaseObject):
         return latents
 
     def prepare_image_cond(self, control_type, cond_rgb: Float[Tensor, "B H W C"]):
-        if control_type in ['normal', 'light', 'segmentation']:
+        if control_type == 'normal':
+            control = cond_rgb.permute(0, 3, 1, 2)
+        elif control_type == 'light':
+            control = cond_rgb.permute(0, 3, 1, 2)
+        elif control_type == 'segmentation':
             control = cond_rgb.permute(0, 3, 1, 2)
         elif control_type == 'depth':
             control = cond_rgb.permute(0, 3, 1, 2)

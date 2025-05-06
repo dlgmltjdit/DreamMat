@@ -61,9 +61,9 @@ class StableDiffusionCSDGuidance(BaseObject):
         condition_scale: float = 1.5
         control_anneal_start_step: Optional[int] = None
         control_anneal_end_scale: Optional[float] = None
-        control_types: List = field(default_factory=lambda: ['depth', 'canny'])  
-        condition_scales: List = field(default_factory=lambda: [1.0, 1.0])
-        condition_scales_anneal: List = field(default_factory=lambda: [1.0, 1.0])
+        control_types: List = field(default_factory=lambda: ['depth', 'canny', 'segmentation'])
+        condition_scales: List = field(default_factory=lambda: [1.0, 1.0, 1.0])
+        condition_scales_anneal: List = field(default_factory=lambda: [1.0, 1.0, 1.0])
         p2p_condition_type: str = 'p2p'
         canny_lower_bound: int = 50
         canny_upper_bound: int = 100
