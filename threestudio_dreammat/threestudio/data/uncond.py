@@ -536,12 +536,6 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
             print("pre-rendering light conditions...please wait for about 15min")
             # Execute the command and capture output
             process = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-            # Print stdout and stderr
-            print("--- Blender Script STDOUT ---")
-            print(process.stdout)
-            print("--- Blender Script STDERR ---")
-            print(process.stderr)
-            print("---------------------------")
             # Check return code
             if process.returncode != 0:
                 print(f"Blender script failed with return code {process.returncode}")
@@ -833,12 +827,9 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
         cur_normal = self.normals[view_id,...]
         cur_light = self.lightmaps[view_id,env_id,...]
 
-        cur_seg = self.segs[view_id,...] # 추가된 코드
-        
-        # (원본) condition_map = torch.cat((cur_depth,cur_normal,cur_light),-1)
+        cur_seg = self.segs[view_id,...] # Segmentation Map
 
-        # *수정* condition_map에 segmentation map 추가
-        condition_map = torch.cat((cur_depth,cur_normal,cur_light),-1) # (H, W, 25)
+        condition_map = torch.cat((cur_depth,cur_normal,cur_light),-1) # (H, W, 22)
 
         return {
             "view_id":view_id,

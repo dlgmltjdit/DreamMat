@@ -173,6 +173,17 @@ class MultiviewIterableDataset(IterableDataset):
             self.frames_position
         )
 
+        prerender_dir = "outputs/dream_mat/A_Knight/pre_render"
+        self.seg_images = []
+        for i in range(self.n_frames):
+            seg_path = os.path.join(prerender_dir, "seg", f"{i:03d}.png")
+            if not os.path.exists(seg_path):
+                raise FileNotFoundError(f"[ERROR] Segmentation image not found: {seg_path}")
+            seg_img = cv2.imread(seg_path, cv2.IMREAD_UNCHANGED)[:, :, :3]
+            seg_img = cv2.resize(seg_img, (self.frame_w, self.frame_h))
+            self.seg_images.append(torch.FloatTensor(seg_img) / 255.0)
+        self.seg_images = torch.stack(self.seg_images)
+
     def __iter__(self):
         while True:
             yield {}
@@ -188,6 +199,7 @@ class MultiviewIterableDataset(IterableDataset):
             "camera_positions": self.frames_position[index : index + 1],
             "light_positions": self.light_positions[index : index + 1],
             "gt_rgb": self.frames_img[index : index + 1],
+            "cond_seg": self.seg_images[index : index + 1],
             "height": self.frame_h,
             "width": self.frame_w,
         }
@@ -357,6 +369,15 @@ class MultiviewDataset(Dataset):
         return self.frames_proj.shape[0]
 
     def __getitem__(self, index):
+        # 세그멘테이션 이미지 경로 설정
+        prerender_dir = "outputs/dream_mat/A_Knight/pre_render"
+        seg_path = os.path.join(prerender_dir, "seg", f"{index:03d}.png")
+        
+        seg_img = cv2.imread(seg_path, cv2.IMREAD_UNCHANGED)[:, :, :3]  # RGB만 사용
+        print(seg_img)
+        seg_img = cv2.resize(seg_img, (self.frame_w, self.frame_h))
+        seg_tensor = torch.FloatTensor(seg_img) / 255.0  # Normalize
+
         return {
             "index": index,
             "rays_o": self.rays_o[index],
@@ -366,6 +387,9 @@ class MultiviewDataset(Dataset):
             "camera_positions": self.frames_position[index],
             "light_positions": self.light_positions[index],
             "gt_rgb": self.frames_img[index],
+            "cond_seg": seg_tensor,  # 세그멘테이션 이미지 추가
+            "height": self.frame_h,
+            "width": self.frame_w
         }
 
     def __iter__(self):

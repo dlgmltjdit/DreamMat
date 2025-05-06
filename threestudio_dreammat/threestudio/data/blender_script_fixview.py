@@ -355,7 +355,6 @@ def save_images(object_file: str) -> None:
                 if not seg_obj:
                      print(f"Warning: No MESH object found in {args.seg_model_path}")
                 else:
-                    print(f"Loaded segmentation model: {seg_obj.name}")
                     # segmentation object 중심 이동
                     bpy.context.view_layer.update()
                     bbox_min, bbox_max = scene_bbox(seg_obj)
@@ -401,7 +400,6 @@ def save_images(object_file: str) -> None:
         # Try to use the first available vertex color layer name if the object has one
         if seg_obj and seg_obj.data.vertex_colors:
             vc_node.layer_name = seg_obj.data.vertex_colors[0].name
-            print(f"Using vertex color layer: {vc_node.layer_name} for segmentation material")
         else:
             # Fallback or default name if needed, though ideally the layer exists
             print("Warning: Segmentation object has no vertex color layer. Using default or first found.")

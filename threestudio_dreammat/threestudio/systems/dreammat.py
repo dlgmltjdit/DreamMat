@@ -63,7 +63,6 @@ class DreamMat(BaseLift3DSystem):
         #guidance_inp=out["comp_rgb"].clamp(0.0, 1.0)
         batch['cond_normal']=out.get('comp_normal', None)
         batch['cond_depth']=out.get('comp_depth', None)
-        batch['cond_seg']=out.get('cond_seg', None)
 
         guidance_out = self.guidance(
             guidance_inp, prompt_utils, **batch, rgb_as_latents=False, 

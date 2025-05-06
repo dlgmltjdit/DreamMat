@@ -205,12 +205,11 @@ class RaytraceRender(Rasterizer):
         diffuse_light[selector]=shade_outputs['diffuse_lights'].detach()
         specular_color[selector]=shade_outputs['specular_colors']
         diffuse_color[selector]=shade_outputs['diffuse_colors']
-
         return {
             "comp_rgb": color_aa,
             "opacity":mask_aa,
             "comp_depth":depth,
-            "comp_normal":gb_normal_aa,#normal_controlnet.reshape(batch_size,height,width,3),#
+            "comp_normal":gb_normal_aa,#normal_controlnet.reshape(batch_size,height,width,3)
             'albedo':albedo.reshape(batch_size,height,width,3),
             'metalness':metalness.reshape(batch_size,height,width,1),
             'roughness':roughness.reshape(batch_size,height,width,1),

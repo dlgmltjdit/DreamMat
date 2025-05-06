@@ -616,7 +616,7 @@ class StableDiffusionCSDGuidance(BaseObject):
             control = control.unsqueeze(0)
             control = control.permute(0, 3, 1, 2)
         elif control_type == 'segmentation':
-            control = control.permute(0, 3, 1, 2)
+            control = cond_rgb.permute(0, 3, 1, 2)
         elif control_type == 'canny':
             control = []
             for i in range(cond_rgb.size()[0]):
@@ -679,6 +679,7 @@ class StableDiffusionCSDGuidance(BaseObject):
             cond_depth = kwargs.get('cond_depth', None)
             cond_light = kwargs.get('condition_map',None)
             cond_normal = kwargs.get('cond_normal',None)
+            cond_seg = kwargs.get('cond_seg', None)
             for k in range(len(self.cfg.control_types)):
                 control_type = self.cfg.control_types[k]
                 if control_type == 'canny':
@@ -688,6 +689,8 @@ class StableDiffusionCSDGuidance(BaseObject):
                 elif control_type == 'light':
                     control_cond = kwargs.get('condition_map')
                     control_cond = self.prepare_image_cond(control_type, cond_light)
+                elif control_type == 'segmentation':
+                    control_cond = self.prepare_image_cond(control_type, cond_seg)
                 elif control_type == 'self-normal':
                     control_cond = self.prepare_image_cond(control_type, cond_normal)
                 else:
