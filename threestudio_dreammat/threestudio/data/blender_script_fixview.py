@@ -499,7 +499,7 @@ def save_images(object_file: str) -> None:
 
     for i in range(args.num_images):
         # set camera
-        print(f"Rendering image {i+1}/{args.num_images}")
+        # print(f"Rendering image {i+1}/{args.num_images}")
         lens_scale = render.resolution_x / cam.data.sensor_width
         cam.data.lens = float(param['focal_length'].flatten()[i])/lens_scale# focus_length transorm
         camera.matrix_world = Matrix(cam_poses[i])
@@ -533,7 +533,7 @@ def save_images(object_file: str) -> None:
 
         # --- Render Segmentation Map if seg_obj exists ---
         if seg_obj:
-            print(f"Rendering segmentation map {i+1}/{args.num_images}")
+            # print(f"Rendering segmentation map {i+1}/{args.num_images}")
             # Hide original object, show segmentation object
             obj_1.hide_render = True
             seg_obj.hide_render = False
@@ -600,7 +600,7 @@ def save_images(object_file: str) -> None:
 
         for i in range(args.num_images):
             # set camera
-            print(f"Rendering light image {i+1}/{args.num_images}, Env {env+1}/5")
+            # print(f"Rendering light image {i+1}/{args.num_images}, Env {env+1}/5")
             lens_scale = render.resolution_x / cam.data.sensor_width
             cam.data.lens = float(param['focal_length'].flatten()[i])/lens_scale# focus_length transorm
             camera.matrix_world = Matrix(cam_poses[i])
