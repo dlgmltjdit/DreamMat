@@ -596,12 +596,7 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
             
             self.depths[view_idx] = torch.from_numpy(loaddepth(depth_path, dim))
             self.normals[view_idx] = torch.from_numpy(loadrgb(normal_path, dim))
-            
-            # 세그멘테이션 맵 로드 (파일이 존재하는 경우에만)
-            if os.path.exists(seg_path):
-                self.segs[view_idx] = torch.from_numpy(loadrgb(seg_path, dim))
-            else:
-                print(f"Warning: Segmentation file not found at {seg_path}")
+            self.segs[view_idx] = torch.from_numpy(loadrgb(seg_path, dim))
 
             for env_idx in range(1,6):
                 light_path_m0r0 =    self.temp_image_save_dir+"/light/"+f"{view_idx:03d}_m0.0r0.0_env"+str(env_idx)+".png"
@@ -843,7 +838,7 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
         # (원본) condition_map = torch.cat((cur_depth,cur_normal,cur_light),-1)
 
         # *수정* condition_map에 segmentation map 추가
-        condition_map = torch.cat((cur_depth,cur_normal,cur_seg,cur_light),-1) # (H, W, 25)
+        condition_map = torch.cat((cur_depth,cur_normal,cur_light),-1) # (H, W, 25)
 
         return {
             "view_id":view_id,
@@ -862,9 +857,8 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
             "height": self.height,
             "width": self.width,
             "condition_map":condition_map,
+            "cond_seg":cur_seg,
         }
-
-
 
 class RandomCameraDataset(Dataset):
     def __init__(self, cfg: Any, split: str) -> None:

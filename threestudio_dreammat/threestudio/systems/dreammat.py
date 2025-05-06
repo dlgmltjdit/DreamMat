@@ -63,9 +63,7 @@ class DreamMat(BaseLift3DSystem):
         #guidance_inp=out["comp_rgb"].clamp(0.0, 1.0)
         batch['cond_normal']=out.get('comp_normal', None)
         batch['cond_depth']=out.get('comp_depth', None)
-        
-        # 세그멘테이션 맵은 condition_map의 7~10 인덱스에 있음 (depth(1) + normal(3) + seg(3) + light(18))
-        batch['cond_seg']=batch["condition_map"][..., 4:7]  # rgb 형식의 세그멘테이션 맵
+        batch['cond_seg']=out.get('cond_seg', None)
 
         guidance_out = self.guidance(
             guidance_inp, prompt_utils, **batch, rgb_as_latents=False, 
