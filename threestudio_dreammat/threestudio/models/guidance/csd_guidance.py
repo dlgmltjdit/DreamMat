@@ -109,7 +109,8 @@ class StableDiffusionCSDGuidance(BaseObject):
                 elif control_type == 'canny':
                     controlnet_name_or_path: str = "lllyasviel/control_v11p_sd15_canny"
                     self.preprocessor_canny = CannyDetector()
-
+                elif control_type == 'segmentation' :
+                    controlnet_name_or_path: str = "lllyasviel/control_v11p_sd15_seg"                    
                 elif control_type == 'self-normal':
                     controlnet_name_or_path: str = "lllyasviel/control_v11p_sd15_normalbae"
                 elif control_type == 'hed':
@@ -613,6 +614,8 @@ class StableDiffusionCSDGuidance(BaseObject):
             detected_map = self.preprocessor_normal(cond_rgb)
             control = torch.from_numpy(np.array(detected_map)).float().to(self.device) / 255.0
             control = control.unsqueeze(0)
+            control = control.permute(0, 3, 1, 2)
+        elif control_type == 'segmentation':
             control = control.permute(0, 3, 1, 2)
         elif control_type == 'canny':
             control = []
