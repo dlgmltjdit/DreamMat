@@ -110,7 +110,7 @@ class StableDiffusionCSDGuidance(BaseObject):
                     controlnet_name_or_path: str = "lllyasviel/control_v11p_sd15_canny"
                     self.preprocessor_canny = CannyDetector()
                 elif control_type == 'segmentation' :
-                    controlnet_name_or_path: str = "lllyasviel/control_v11p_sd15_seg"                    
+                    controlnet_name_or_path: str = "thibaud/controlnet-sd21-ade20k-diffusers"                    
                 elif control_type == 'self-normal':
                     controlnet_name_or_path: str = "lllyasviel/control_v11p_sd15_normalbae"
                 elif control_type == 'hed':

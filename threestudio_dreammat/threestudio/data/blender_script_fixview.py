@@ -335,37 +335,86 @@ def save_images(object_file: str) -> None:
     n_mesh_1.from_pydata(param['v_pos'],[],param['t_pos_idx'])
     n_mesh_1.update()
 
-    # Load segmentation model if path is provided
+    # 세그멘테이션 처리 - 방법 2로 통일 (원본 메시의 정점 색상 사용)
     seg_obj = None
-    if args.seg_model_path:
+    if 'v_color' in param and obj_1 is not None:
         try:
-            # Store original objects
-            original_objs = set(bpy.data.objects)
-            load_object(args.seg_model_path)
-            # Find the newly added object(s)
-            loaded_objs = set(bpy.data.objects) - original_objs
-            if not loaded_objs:
-                print(f"Warning: No objects loaded from {args.seg_model_path}")
-            else:
-                # Assuming the main mesh is the first loaded object or the one with geometry
-                for obj in loaded_objs:
-                    if obj.type == 'MESH':
-                        seg_obj = obj
-                        break
-                if not seg_obj:
-                     print(f"Warning: No MESH object found in {args.seg_model_path}")
+            print("Applying vertex colors from pickle data to original mesh for segmentation")
+            # 정점 색상 레이어 생성
+            if not obj_1.data.vertex_colors:
+                obj_1.data.vertex_colors.new(name="Col")
+                
+            color_layer = obj_1.data.vertex_colors["Col"]
+            
+            # 메시에 정점 색상 적용
+            v_colors = param['v_color']
+            
+            # 적절한 형식인지 확인
+            if v_colors.shape[1] >= 3:  # RGB 값 최소 필요
+                mesh = obj_1.data
+                # 각 폴리곤(face)를 순회
+                for poly_idx, poly in enumerate(mesh.polygons):
+                    # 해당 폴리곤을 구성하는 인덱스 순회
+                    for loop_idx in range(poly.loop_start, poly.loop_start + poly.loop_total):
+                        vertex_idx = mesh.loops[loop_idx].vertex_index
+                        # v_colors에서 색상을 가져와 색상 레이어에 할당
+                        if vertex_idx < len(v_colors):
+                            color_layer.data[loop_idx].color = (
+                                v_colors[vertex_idx][0],
+                                v_colors[vertex_idx][1],
+                                v_colors[vertex_idx][2],
+                                1.0 if v_colors.shape[1] < 4 else v_colors[vertex_idx][3]
+                            )
+                
+                # 원본 메시 복제하여 세그멘테이션 메시 생성
+                bpy.ops.object.select_all(action='DESELECT')
+                obj_1.select_set(True)
+                bpy.context.view_layer.objects.active = obj_1
+                bpy.ops.object.duplicate()
+                
+                # 복제된 객체 가져오기
+                seg_obj = bpy.context.active_object
+                seg_obj.name = "SegmentationMesh"
+                
+                # 세그멘테이션 마테리얼 생성
+                seg_mat = bpy.data.materials.new(name="SegmentationMaterial")
+                seg_mat.use_nodes = True
+                seg_tree = seg_mat.node_tree
+                seg_nodes = seg_tree.nodes
+                
+                # 기본 노드 제거
+                for node in seg_nodes:
+                    seg_nodes.remove(node)
+                
+                # Emission 노드와 Material Output 노드 추가
+                emission_node = seg_nodes.new(type='ShaderNodeEmission')
+                output_node = seg_nodes.new(type='ShaderNodeOutputMaterial')
+                
+                # 정점 색상 노드 추가
+                vc_node = seg_nodes.new(type='ShaderNodeVertexColor')
+                vc_node.layer_name = "Col"  # 생성한 정점 색상 레이어 사용
+                
+                # 노드 연결
+                seg_tree.links.new(vc_node.outputs['Color'], emission_node.inputs['Color'])
+                seg_tree.links.new(emission_node.outputs['Emission'], output_node.inputs['Surface'])
+                
+                # 복제된 객체에 세그멘테이션 마테리얼 할당
+                if seg_obj.data.materials:
+                    seg_obj.data.materials[0] = seg_mat
                 else:
-                    # segmentation object 중심 이동
-                    bpy.context.view_layer.update()
-                    bbox_min, bbox_max = scene_bbox(seg_obj)
-                    offset = -(bbox_min + bbox_max) / 2
-                    seg_obj.location += offset
-
-                    # Initially hide the segmentation object for rendering
-                    seg_obj.hide_render = True
+                    seg_obj.data.materials.append(seg_mat)
+                
+                # 세그멘테이션 객체 초기 렌더링 숨김
+                seg_obj.hide_render = True
+                
+                print("Successfully set up segmentation using vertex colors from pickle data")
+            else:
+                print(f"Invalid vertex color data shape: {v_colors.shape}")
         except Exception as e:
-            print(f"Error loading segmentation model from {args.seg_model_path}: {e}")
-            seg_obj = None
+            print(f"Error applying vertex colors from pickle: {e}")
+            # 세그멘테이션 없이 계속 진행
+    else:
+        print("No vertex color data found in pickle, segmentation will not be available")
 
     # set smooth mesh
     for polygon in n_mesh_1.polygons:

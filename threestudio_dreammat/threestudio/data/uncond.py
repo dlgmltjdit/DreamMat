@@ -527,11 +527,69 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
             data['focal_length'] = focal_length.cpu().numpy()
             data['c2w']       = c2w.cpu().numpy()
 
+            # --- 세그멘테이션 정보 처리 방식 통일 - 방법 2로 통일 ---
+            # 원래 GLB 파일로 세그멘테이션 메시를 처리하던 방식을 제거하고,
+            # 세그멘테이션 레이블을 원본 메시에 직접 적용하는 방식으로 통일합니다.
+            
+            # 세그멘테이션 레이블 데이터 로드
+            try:
+                import numpy as np
+                
+                # 세그멘테이션 레이블 파일 경로
+                seg_labels_path = "load/shapes/seg/house_seg.npy"
+                if os.path.exists(seg_labels_path):
+                    seg_labels = np.load(seg_labels_path)
+                    
+                    # face 수가 일치하는지 확인
+                    if len(seg_labels) == len(data['t_pos_idx']):
+                        threestudio.info(f"Loaded segmentation labels: {seg_labels.shape}, unique labels: {np.unique(seg_labels)}")
+                        
+                        # 색상 맵 정의 (레이블 -> RGB 색상)
+                        # 고유한 색상을 위해 각 레이블별 고정 색상 사용
+                        num_labels = int(np.max(seg_labels)) + 1
+                        # 무작위 색상이지만 고정된 시드 사용으로 일관성 유지
+                        np.random.seed(42)  
+                        color_map = np.random.random((num_labels, 3))
+                        
+                        # 각 face에 색상 할당
+                        face_colors = color_map[seg_labels]
+                        
+                        # vertex colors 계산 (face colors에서 평균 계산)
+                        vertex_colors = np.zeros((len(data['v_pos']), 3), dtype=np.float32)
+                        vertex_count = np.zeros(len(data['v_pos']), dtype=np.int32)
+                        
+                        # 각 face의 색상을 해당 face의 vertex에 할당
+                        for i, face in enumerate(data['t_pos_idx']):
+                            for vertex_idx in face:
+                                vertex_colors[vertex_idx] += face_colors[i]
+                                vertex_count[vertex_idx] += 1
+                        
+                        # 평균 계산
+                        for i in range(len(vertex_colors)):
+                            if vertex_count[i] > 0:
+                                vertex_colors[i] /= vertex_count[i]
+                        
+                        # 알파 채널 추가
+                        vertex_colors_with_alpha = np.ones((len(data['v_pos']), 4), dtype=np.float32)
+                        vertex_colors_with_alpha[:, :3] = vertex_colors
+                        
+                        # data에 vertex color 추가
+                        data['v_color'] = vertex_colors_with_alpha
+                        threestudio.info(f"Added vertex colors from segmentation labels to original mesh")
+                    else:
+                        threestudio.warn(f"Segmentation labels count ({len(seg_labels)}) doesn't match face count ({len(data['t_pos_idx'])})")
+                else:
+                    threestudio.warn(f"Segmentation labels file not found: {seg_labels_path}")
+            except Exception as e:
+                threestudio.warn(f"Failed to apply segmentation colors to original mesh: {str(e)}")
+            
             os.makedirs('temp', exist_ok=True)
             pkl_path = 'temp/render_fixview_temp.pkl'
             with open(pkl_path, 'wb') as f:
                 pickle.dump(data, f)
-            cmd = f'blender -b -P ./threestudio/data/blender_script_fixview.py -- --param_dir {pkl_path} --env_dir {envmap_dir} --output_dir {self.temp_image_save_dir} --num_images {self.cfg.fix_view_num} --seg_model_path "load/shapes/objs/knight_seg.glb"'
+            
+            # 별도의 세그멘테이션 모델 파일을 사용하지 않음 - 원본 메시에 색상 적용
+            cmd = f'blender -b -P ./threestudio/data/blender_script_fixview.py -- --param_dir {pkl_path} --env_dir {envmap_dir} --output_dir {self.temp_image_save_dir} --num_images {self.cfg.fix_view_num}'
             print(cmd)
             print("pre-rendering light conditions...please wait for about 15min")
             # Execute the command and capture output
