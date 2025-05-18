@@ -65,24 +65,6 @@ class SegControlnetMagic3D(BaseLift3DSystem):
         super().on_fit_start()
 
     def training_step(self, batch, batch_idx):
-        # prompt_utils = self.prompt_processor()
-        
-        # if self.true_global_step < self.cfg.init_step:
-        #     init_batch = self.get_random_init_batch()
-        #     out = self(init_batch)
-        #     batch['cond_rgb']=out.get('comp_normal', None)
-        #     batch['cond_depth']=out.get('depth', None)
-        #     guidance_out = self.guidance(
-        #         out["comp_rgb"], prompt_utils, **batch, batch_idx=batch_idx, rgb_as_latents=False, 
-        #     )
-
-        # else:
-        #     out = self(batch)
-        #     batch['cond_rgb']=out.get('comp_normal', None)
-        #     batch['cond_depth']=out.get('depth', None)
-        #     guidance_out = self.guidance(
-        #         out["comp_rgb"], prompt_utils, **batch, batch_idx=batch_idx, rgb_as_latents=False, 
-        #     )
         prompt_utils = self.prompt_processor()
         if self.true_global_step < self.cfg.init_step:
             init_batch = self.get_random_init_batch()
@@ -96,7 +78,7 @@ class SegControlnetMagic3D(BaseLift3DSystem):
 
         else:
             out = self(batch)
-            
+        
         #guidance_inp = get_activation("lin2srgb")(out["comp_rgb"])
         guidance_inp=out["comp_rgb"].clamp(0.0, 1.0)
         batch['cond_normal']=out.get('comp_normal', None)
@@ -119,12 +101,12 @@ class SegControlnetMagic3D(BaseLift3DSystem):
         if self.cfg.save_train_image:
             if self.true_global_step%self.cfg.save_train_image_iter == 0:
                 srgb=get_activation("lin2srgb")(out["comp_rgb"][0].detach())
-                self.save_image_grid(
-                f"train/it{self.true_global_step}.png",
-                [
+                
+                # Create list of images to save
+                validation_images = [
                     {
                         "type": "rgb",
-                        "img": out["comp_rgb"][0].detach(),#srgb,
+                        "img": out["comp_rgb"][0].detach(),
                         "kwargs": {"data_format": "HWC"},
                     },
                     {
@@ -147,10 +129,7 @@ class SegControlnetMagic3D(BaseLift3DSystem):
                         "img": out["roughness"][0, :, :, 0],
                         "kwargs": {"cmap": None, "data_range": (0, 1)},
                     },
-                ],
-                name="train_step",
-                step=self.true_global_step,
-            )
+                ]
 
         return {"loss": loss}
 

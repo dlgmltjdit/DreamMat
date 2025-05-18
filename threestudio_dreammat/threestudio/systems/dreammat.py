@@ -2,6 +2,9 @@ from dataclasses import dataclass, field
 
 import torch
 import torch.nn.functional as F
+import numpy as np
+import matplotlib.pyplot as plt
+import os
 
 import threestudio
 from threestudio.systems.base import BaseLift3DSystem
@@ -59,17 +62,19 @@ class DreamMat(BaseLift3DSystem):
         prompt_utils = self.prompt_processor()
         out = self(batch)
         guidance_inp = out["comp_rgb"]
-        #guidance_inp = get_activation("lin2srgb")(out["comp_rgb"])
-        #guidance_inp=out["comp_rgb"].clamp(0.0, 1.0)
         batch['cond_normal']=out.get('comp_normal', None)
         batch['cond_depth']=out.get('comp_depth', None)
 
+        # Store last generated segmentation controlnet image
+        if not hasattr(self, 'seg_controlnet_image'):
+            self.seg_controlnet_image = None
+
+        # Use the original rendered image for guidance
         guidance_out = self.guidance(
             guidance_inp, prompt_utils, **batch, rgb_as_latents=False, 
         )
-        
 
-        loss = 0.0    
+        loss = 0.0
         for name, value in guidance_out.items():
             self.log(f"train/{name}", value)
             if name.startswith("loss_"):
@@ -80,14 +85,40 @@ class DreamMat(BaseLift3DSystem):
                 self.log(f"train/{name}", value)
                 loss += value * self.C(self.cfg.loss[name.replace("loss_", "lambda_")])
 
-        
-
         for name, value in self.cfg.loss.items():
             self.log(f"train_params/{name}", self.C(value))
 
         if self.cfg.save_train_image:
             if self.true_global_step%self.cfg.save_train_image_iter == 0:
-                train_images_row=[
+                # Generate segmentation controlnet image only when saving train images
+                seg_controlnet_output = self.guidance.generate_with_segmentation_controlnet(
+                    prompt_utils,
+                    guidance_inp,
+                    batch['cond_seg'],
+                    batch['elevation'],
+                    batch['azimuth'],
+                    batch['camera_distances']
+                )
+                
+                # Convert from BCHW to BHWC for display
+                seg_controlnet_image = seg_controlnet_output.permute(0, 2, 3, 1)
+                
+                # Save for potential reuse
+                self.seg_controlnet_image = seg_controlnet_image
+                
+                # Ensure all images have the same dimensions
+                height, width = guidance_inp.shape[1], guidance_inp.shape[2]
+                if seg_controlnet_image.shape[1] != height or seg_controlnet_image.shape[2] != width:
+                    # Resize seg_controlnet_image to match guidance_inp dimensions
+                    seg_controlnet_image = F.interpolate(
+                        seg_controlnet_image.permute(0, 3, 1, 2),  # BHWC -> BCHW
+                        size=(height, width),
+                        mode="bilinear",
+                        align_corners=False
+                    ).permute(0, 2, 3, 1)  # BCHW -> BHWC
+                
+                # Image row : train
+                train_images_row = [
                     {
                         "type": "rgb",
                         "img": out["comp_rgb"][0],
@@ -128,8 +159,17 @@ class DreamMat(BaseLift3DSystem):
                         "img": out["roughness"][0, :, :, 0],
                         "kwargs": {"cmap": None, "data_range": (0, 1)},
                     },
+                    
+                    # Add segmentation controlnet generated image
+                    {
+                        "type": "rgb",
+                        "img": seg_controlnet_image[0],
+                        "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
+                    },
                 ]
-                train_conditions_row=[
+                
+                # Image row : condition
+                train_conditions_row = [
                     {
                         "type": "grayscale",
                         "img": batch["condition_map"][0, :, :, 0],
@@ -170,6 +210,13 @@ class DreamMat(BaseLift3DSystem):
                         "img": batch["condition_map"][0, :, :, 19:22],
                         "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
                     },
+                    
+                    # Add segmentation condition
+                    {
+                        "type": "rgb",
+                        "img": batch["cond_seg"][0],
+                        "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
+                    },
                 ]
                 
                 self.save_image_grid(f"train/it{self.true_global_step}.png",
@@ -177,6 +224,7 @@ class DreamMat(BaseLift3DSystem):
                     name="train_step",
                     step=self.true_global_step,
                 )
+
         return {"loss": loss}
 
     def validation_step(self, batch):

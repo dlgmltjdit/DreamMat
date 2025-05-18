@@ -425,7 +425,6 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
         
         def saveimg(img,path):
             from PIL import Image
-            import numpy as np
             img=img.detach().reshape(self.height,self.width,3).cpu().numpy()
             img=Image.fromarray((img*255).astype(np.uint8))
             img.save(path)
@@ -527,16 +526,14 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
             data['focal_length'] = focal_length.cpu().numpy()
             data['c2w']       = c2w.cpu().numpy()
 
-            # --- 세그멘테이션 정보 처리 방식 통일 - 방법 2로 통일 ---
-            # 원래 GLB 파일로 세그멘테이션 메시를 처리하던 방식을 제거하고,
-            # 세그멘테이션 레이블을 원본 메시에 직접 적용하는 방식으로 통일합니다.
-            
+            # 원래 GLB 파일로 세그멘테이션 메시를 처리하던 방식 제거
+            # 세그멘테이션 레이블을 원본 메시에 직접 적용
             # 세그멘테이션 레이블 데이터 로드
             try:
                 import numpy as np
                 
                 # 세그멘테이션 레이블 파일 경로
-                seg_labels_path = "load/shapes/seg/house_seg.npy"
+                seg_labels_path = "load/shapes/seg/ruined_house.npy"
                 if os.path.exists(seg_labels_path):
                     seg_labels = np.load(seg_labels_path)
                     
@@ -547,19 +544,55 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
                         # 색상 맵 정의 (레이블 -> RGB 색상)
                         # 고유한 색상을 위해 각 레이블별 고정 색상 사용
                         num_labels = int(np.max(seg_labels)) + 1
-                        # 무작위 색상이지만 고정된 시드 사용으로 일관성 유지
-                        np.random.seed(42)  
-                        color_map = np.random.random((num_labels, 3))
                         
-                        # 각 face에 색상 할당
-                        face_colors = color_map[seg_labels]
+                        # 고정된 색상 매핑 정의
+                        color_map = np.array([
+                            [4/255.0, 200/255.0, 3/255.0], # 0 : tree
+                            [0.0, 0.0, 0.0], # 1 : house
+                            [4/255.0, 200/255.0, 3/255.0], # 2 : tree
+                            [4/255.0, 200/255.0, 3/255.0], # 3 : tree
+                            [0.0, 0.0, 0.0], # 4 : house
+                            [0.0, 0.0, 0.0], # 5 : house
+                            [0.0, 0.0, 0.0], # 6 : house
+                            [0.0, 0.0, 0.0], # 7 : house
+                            [0.0, 0.0, 0.0], # 8 : house
+                            [0.0, 0.0, 0.0], # 9 : house
+                            [4/255.0, 200/255.0, 3/255.0], # 10 : tree
+                            [0.0, 0.0, 0.0], # 11 : house
+                            [0.0, 0.0, 0.0], # 12 : house
+                            [0.0, 0.0, 0.0], # 13 : house
+                            [0.0, 0.0, 0.0], # 14 : house
+                            [0.0, 0.0, 0.0], # 15 : house
+                            [0.0, 0.0, 0.0], # 16 : house
+                        ], dtype=np.float32)
+                        
+                        # 레이블 수가 color_map보다 많으면 추가 색상 생성
+                        if num_labels > len(color_map):
+                            additional_colors = np.random.random((num_labels - len(color_map), 3))
+                            color_map = np.vstack([color_map, additional_colors])
+                        
+                        # house에 해당하는 레이블 목록
+                        house_labels = [1, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16]
+                        
+                        # house가 아닌 face만 필터링
+                        non_house_mask = np.array([label not in house_labels for label in seg_labels])
+                        threestudio.info(f"Keeping {non_house_mask.sum()} out of {len(seg_labels)} faces (removing house)")
+                        
+                        # house가 아닌 face만 남긴 새로운 t_pos_idx 생성
+                        filtered_t_pos_idx = data['t_pos_idx'][non_house_mask]
+                        
+                        # 업데이트된 face 인덱스로 데이터 교체
+                        data['t_pos_idx'] = filtered_t_pos_idx
+                        
+                        # 파일터링된 face에 대한 색상만 계산
+                        face_colors = color_map[seg_labels[non_house_mask]]
                         
                         # vertex colors 계산 (face colors에서 평균 계산)
                         vertex_colors = np.zeros((len(data['v_pos']), 3), dtype=np.float32)
                         vertex_count = np.zeros(len(data['v_pos']), dtype=np.int32)
                         
                         # 각 face의 색상을 해당 face의 vertex에 할당
-                        for i, face in enumerate(data['t_pos_idx']):
+                        for i, face in enumerate(filtered_t_pos_idx):
                             for vertex_idx in face:
                                 vertex_colors[vertex_idx] += face_colors[i]
                                 vertex_count[vertex_idx] += 1
@@ -575,7 +608,6 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
                         
                         # data에 vertex color 추가
                         data['v_color'] = vertex_colors_with_alpha
-                        threestudio.info(f"Added vertex colors from segmentation labels to original mesh")
                     else:
                         threestudio.warn(f"Segmentation labels count ({len(seg_labels)}) doesn't match face count ({len(data['t_pos_idx'])})")
                 else:
@@ -588,7 +620,6 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
             with open(pkl_path, 'wb') as f:
                 pickle.dump(data, f)
             
-            # 별도의 세그멘테이션 모델 파일을 사용하지 않음 - 원본 메시에 색상 적용
             cmd = f'blender -b -P ./threestudio/data/blender_script_fixview.py -- --param_dir {pkl_path} --env_dir {envmap_dir} --output_dir {self.temp_image_save_dir} --num_images {self.cfg.fix_view_num}'
             print(cmd)
             print("pre-rendering light conditions...please wait for about 15min")
@@ -603,6 +634,7 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
                 print("rendering done")
 
         def loadrgb(imgpath,dim):
+            import numpy as np  # numpy를 함수 내에서 임포트
             img = cv2.imread(imgpath,cv2.IMREAD_UNCHANGED)
             img = cv2.resize(img, dim, interpolation = cv2.INTER_AREA)
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -611,6 +643,7 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
             return img
 
         def loaddepth(imgpath,dim):
+            import numpy as np  # numpy를 함수 내에서 임포트
             depth = cv2.imread(imgpath, cv2.IMREAD_ANYDEPTH)/1000
             # Check if image loading failed
             if depth is None:
@@ -637,7 +670,6 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
         self.depths = torch.zeros((128,self.height,self.width,1))
         self.normals = torch.ones((128,self.height,self.width,3))
         self.lightmaps = torch.zeros((128,5,self.height,self.width,18))
-
         self.segs = torch.ones((128,self.height,self.width,3)) # 세그멘테이션 텐서 초기화
 
         dim = (self.width, self.height)
@@ -648,8 +680,14 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
             
             self.depths[view_idx] = torch.from_numpy(loaddepth(depth_path, dim))
             self.normals[view_idx] = torch.from_numpy(loadrgb(normal_path, dim))
-            self.segs[view_idx] = torch.from_numpy(loadrgb(seg_path, dim))
-
+            
+            seg_img = loadrgb(seg_path, dim)
+            if view_idx == 0:  # 첫 번째 뷰에 대해서만 로깅
+                threestudio.info(f"Successfully loaded seg image: shape={seg_img.shape}, range=[{seg_img.min()}, {seg_img.max()}]")
+                import numpy as np  # numpy 명시적 임포트 추가
+                unique_colors = np.unique(seg_img.reshape(-1, 3), axis=0)
+            self.segs[view_idx] = torch.from_numpy(seg_img)
+                
             for env_idx in range(1,6):
                 light_path_m0r0 =    self.temp_image_save_dir+"/light/"+f"{view_idx:03d}_m0.0r0.0_env"+str(env_idx)+".png"
                 light_path_m0rhalf = self.temp_image_save_dir+"/light/"+f"{view_idx:03d}_m0.0r0.5_env"+str(env_idx)+".png"
@@ -884,8 +922,7 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
         cur_depth = self.depths[view_id,...]
         cur_normal = self.normals[view_id,...]
         cur_light = self.lightmaps[view_id,env_id,...]
-
-        cur_seg = self.segs[view_id,...] # Segmentation Map
+        cur_seg = self.segs[view_id,...]  # Segmentation Map
 
         condition_map = torch.cat((cur_depth,cur_normal,cur_light),-1) # (H, W, 22)
 
@@ -906,7 +943,7 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
             "height": self.height,
             "width": self.width,
             "condition_map":condition_map,
-            "cond_seg":cur_seg,
+            "cond_seg":cur_seg
         }
 
 class RandomCameraDataset(Dataset):

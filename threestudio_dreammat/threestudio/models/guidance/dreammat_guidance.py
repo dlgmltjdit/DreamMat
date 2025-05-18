@@ -16,6 +16,7 @@ from diffusers import (
     UNet2DConditionModel,
     ControlNetModel,
     DDIMScheduler,
+    StableDiffusionControlNetImg2ImgPipeline,
 )
 from diffusers.loaders import AttnProcsLayers
 from diffusers.models.attention_processor import LoRAAttnProcessor
@@ -56,13 +57,13 @@ class StableDiffusionLightGuidance(BaseObject):
         half_precision_weights: bool = True
 
         # set up for potential control net
-        use_controlnet: bool = False
+        use_controlnet: bool = True
         condition_scale: float = 1.5
         control_anneal_start_step: Optional[int] = None
         control_anneal_end_scale: Optional[float] = None
-        control_types: List = field(default_factory=lambda: ['depth', 'canny', 'segmentation'])  
-        condition_scales: List = field(default_factory=lambda: [1.0, 1.0, 1.0])
-        condition_scales_anneal: List = field(default_factory=lambda: [1.0, 1.0, 1.0])
+        control_types: List = field(default_factory=lambda: ['light', 'segmentation'])  
+        condition_scales: List = field(default_factory=lambda: [1.0, 10.0])
+        condition_scales_anneal: List = field(default_factory=lambda: [1.0, 1.0])
         p2p_condition_type: str = 'p2p'
         canny_lower_bound: int = 50
         canny_upper_bound: int = 100
@@ -199,10 +200,62 @@ class StableDiffusionLightGuidance(BaseObject):
         self.uncond_scale = -0.0
         self.null_scale = -1.0
         self.perpneg_scale = 0.0
-        
+
+        # Initialize segmentation controlnet pipeline
+        self.init_segmentation_controlnet()
 
         threestudio.info(f"Loaded Stable Diffusion!")
 
+    def init_segmentation_controlnet(self):
+        """Initialize the segmentation controlnet pipeline once."""
+        try:
+            from diffusers import StableDiffusionControlNetImg2ImgPipeline, ControlNetModel, DDIMScheduler
+            import numpy as np
+            from PIL import Image
+
+            threestudio.info("Initializing segmentation controlnet pipeline (one-time setup)...")
+            # Load segmentation controlnet model
+            try:
+                controlnet = ControlNetModel.from_pretrained(
+                    "thibaud/controlnet-sd21-ade20k-diffusers",
+                    torch_dtype=self.weights_dtype,
+                    cache_dir=self.cfg.cache_dir
+                ).to(self.device)
+            except Exception as e:
+                threestudio.warn(f"Failed to load segmentation controlnet: {e}")
+                self.seg_controlnet_pipe = None
+                return
+
+            # Create the pipeline
+            try:
+                self.seg_controlnet_pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
+                    self.cfg.pretrained_model_name_or_path,
+                    controlnet=controlnet,
+                    safety_checker=None,
+                    torch_dtype=self.weights_dtype,
+                    cache_dir=self.cfg.cache_dir
+                ).to(self.device)
+            except Exception as e:
+                threestudio.warn(f"Failed to load StableDiffusion pipeline for segmentation: {e}")
+                self.seg_controlnet_pipe = None
+                return
+
+            # Set scheduler
+            self.seg_controlnet_pipe.scheduler = DDIMScheduler.from_pretrained(
+                self.cfg.pretrained_model_name_or_path,
+                subfolder="scheduler",
+                torch_dtype=self.weights_dtype,
+                cache_dir=self.cfg.cache_dir
+            )
+
+            # Enable memory efficient attention if available
+            if is_xformers_available():
+                self.seg_controlnet_pipe.enable_xformers_memory_efficient_attention()
+                
+            threestudio.info("Segmentation controlnet pipeline initialized successfully")
+        except Exception as e:
+            threestudio.warn(f"Failed to initialize segmentation controlnet pipeline: {e}")
+            self.seg_controlnet_pipe = None
 
     def multi_control_forward(
             self,
@@ -632,4 +685,91 @@ class StableDiffusionLightGuidance(BaseObject):
             and global_step > self.cfg.control_anneal_start_step
         ):
             self.cfg.condition_scales = self.cfg.condition_scales_anneal
+    
+    def generate_with_segmentation_controlnet(
+        self,
+        prompt_utils,
+        rgb: Float[Tensor, "B H W C"],
+        cond_seg: Float[Tensor, "B H W C"],
+        elevation: Float[Tensor, "B"],
+        azimuth: Float[Tensor, "B"],
+        camera_distances: Float[Tensor, "B"],
+    ):
+        # Check if the pipeline was successfully initialized
+        if self.seg_controlnet_pipe is None:
+            threestudio.warn("Segmentation controlnet pipeline not available, returning original image")
+            return rgb.permute(0, 3, 1, 2)
+            
+        try:
+            # Get text embeddings
+            text_embeddings = prompt_utils.get_text_embeddings(
+                elevation,
+                azimuth,
+                camera_distances,
+                self.cfg.view_dependent_prompting,
+                return_null_text_embeddings=True,
+            )
+
+            # Generate image using the segmentation controlnet
+            threestudio.info("Generating image with segmentation controlnet...")
+            with torch.no_grad():
+                prompt_embeds = text_embeddings[:1]  # Use the text conditioning
+                negative_prompt_embeds = text_embeddings[1:2]  # Use the unconditional embedding
+
+                # Convert rgb to PIL image for img2img
+                rgb_np = rgb[0].detach().cpu().numpy()
+                from PIL import Image
+                import numpy as np
+                init_image = Image.fromarray((rgb_np * 255).astype(np.uint8))
+                
+                # Convert segmentation mask to PIL
+                seg_np = cond_seg[0].detach().cpu().numpy()
+                seg_image = Image.fromarray((seg_np * 255).astype(np.uint8))
+                
+                # Get dimensions
+                height, width = rgb.shape[1], rgb.shape[2]
+                
+                # Resize if needed - some models require specific dimensions
+                if height != 512 or width != 512:
+                    threestudio.info(f"Resizing images from {width}x{height} to 512x512")
+                    init_image = init_image.resize((512, 512), Image.LANCZOS)
+                    seg_image = seg_image.resize((512, 512), Image.LANCZOS)
+                    resized = True
+                else:
+                    resized = False
+
+                # Run pipeline
+                try:
+                    threestudio.info("Running segmentation controlnet pipeline...")
+                    output = self.seg_controlnet_pipe(
+                        prompt_embeds=prompt_embeds,
+                        negative_prompt_embeds=negative_prompt_embeds,
+                        image=init_image,
+                        control_image=seg_image,
+                        num_inference_steps=100,
+                        guidance_scale=9.5,
+                        controlnet_conditioning_scale=1.5,
+                        strength=0.6,  # Added strength parameter - controls how much to respect the original image
+                    )
+                    
+                    # Convert output image back to tensor
+                    output_image = output.images[0]
+                    
+                    # Resize back to original dimensions if needed
+                    if resized:
+                        threestudio.info(f"Resizing output back to {width}x{height}")
+                        output_image = output_image.resize((width, height), Image.LANCZOS)
+                        
+                    output_tensor = torch.from_numpy(np.array(output_image)).float() / 255.0
+                    output_tensor = output_tensor.permute(2, 0, 1).unsqueeze(0)  # [1, 3, H, W]
+                    
+                    threestudio.info("Successfully generated image with segmentation controlnet")
+                    return output_tensor
+                    
+                except Exception as e:
+                    threestudio.warn(f"Error during segmentation controlnet pipeline: {e}")
+                    return rgb.permute(0, 3, 1, 2)
+        except Exception as e:
+            threestudio.warn(f"Unexpected error in segmentation controlnet generation: {e}")
+            return rgb.permute(0, 3, 1, 2)
     
