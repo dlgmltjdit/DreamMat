@@ -694,6 +694,7 @@ class StableDiffusionLightGuidance(BaseObject):
         elevation: Float[Tensor, "B"],
         azimuth: Float[Tensor, "B"],
         camera_distances: Float[Tensor, "B"],
+        custom_prompt: str = None,
     ):
         # Check if the pipeline was successfully initialized
         if self.seg_controlnet_pipe is None:
@@ -701,7 +702,7 @@ class StableDiffusionLightGuidance(BaseObject):
             return rgb.permute(0, 3, 1, 2)
             
         try:
-            # Get text embeddings
+            # Always get text embeddings for negative prompt
             text_embeddings = prompt_utils.get_text_embeddings(
                 elevation,
                 azimuth,
@@ -709,66 +710,122 @@ class StableDiffusionLightGuidance(BaseObject):
                 self.cfg.view_dependent_prompting,
                 return_null_text_embeddings=True,
             )
-
+            
+            negative_prompt_embeds = text_embeddings[1:2]  # Use the original unconditional embedding
+            
             # Generate image using the segmentation controlnet
             threestudio.info("Generating image with segmentation controlnet...")
             with torch.no_grad():
-                prompt_embeds = text_embeddings[:1]  # Use the text conditioning
-                negative_prompt_embeds = text_embeddings[1:2]  # Use the unconditional embedding
+                # Use custom prompt if provided
+                if custom_prompt is not None:
+                    threestudio.info(f"Using custom prompt: '{custom_prompt}' with original negative prompt")
+                    
+                    # Convert rgb to PIL image for img2img
+                    rgb_np = rgb[0].detach().cpu().numpy()
+                    from PIL import Image
+                    import numpy as np
+                    init_image = Image.fromarray((rgb_np * 255).astype(np.uint8))
+                    
+                    # Convert segmentation mask to PIL
+                    seg_np = cond_seg[0].detach().cpu().numpy()
+                    seg_image = Image.fromarray((seg_np * 255).astype(np.uint8))
+                    
+                    # Get dimensions
+                    height, width = rgb.shape[1], rgb.shape[2]
+                    
+                    # Resize if needed - some models require specific dimensions
+                    if height != 512 or width != 512:
+                        threestudio.info(f"Resizing images from {width}x{height} to 512x512")
+                        init_image = init_image.resize((512, 512), Image.LANCZOS)
+                        seg_image = seg_image.resize((512, 512), Image.LANCZOS)
+                        resized = True
+                    else:
+                        resized = False
 
-                # Convert rgb to PIL image for img2img
-                rgb_np = rgb[0].detach().cpu().numpy()
-                from PIL import Image
-                import numpy as np
-                init_image = Image.fromarray((rgb_np * 255).astype(np.uint8))
-                
-                # Convert segmentation mask to PIL
-                seg_np = cond_seg[0].detach().cpu().numpy()
-                seg_image = Image.fromarray((seg_np * 255).astype(np.uint8))
-                
-                # Get dimensions
-                height, width = rgb.shape[1], rgb.shape[2]
-                
-                # Resize if needed - some models require specific dimensions
-                if height != 512 or width != 512:
-                    threestudio.info(f"Resizing images from {width}x{height} to 512x512")
-                    init_image = init_image.resize((512, 512), Image.LANCZOS)
-                    seg_image = seg_image.resize((512, 512), Image.LANCZOS)
-                    resized = True
-                else:
-                    resized = False
-
-                # Run pipeline
-                try:
-                    threestudio.info("Running segmentation controlnet pipeline...")
-                    output = self.seg_controlnet_pipe(
-                        prompt_embeds=prompt_embeds,
-                        negative_prompt_embeds=negative_prompt_embeds,
-                        image=init_image,
-                        control_image=seg_image,
-                        num_inference_steps=100,
-                        guidance_scale=9.5,
-                        controlnet_conditioning_scale=1.5,
-                        strength=0.6,  # Added strength parameter - controls how much to respect the original image
+                    # Encode the custom prompt
+                    inputs = self.pipe.tokenizer(
+                        [custom_prompt],
+                        padding="max_length",
+                        max_length=self.pipe.tokenizer.model_max_length,
+                        truncation=True,
+                        return_tensors="pt",
                     )
+                    custom_prompt_embeds = self.pipe.text_encoder(inputs.input_ids.to(self.device))[0]
                     
-                    # Convert output image back to tensor
-                    output_image = output.images[0]
+                    # Run pipeline with custom prompt and original negative prompt
+                    try:
+                        threestudio.info("Running segmentation controlnet pipeline with custom prompt...")
+                        output = self.seg_controlnet_pipe(
+                            prompt_embeds=custom_prompt_embeds,
+                            negative_prompt_embeds=negative_prompt_embeds,
+                            image=init_image,
+                            control_image=seg_image,
+                            num_inference_steps=100,
+                            guidance_scale=9.5,
+                            controlnet_conditioning_scale=1.5,
+                            strength=0.6,
+                        )
+                    except Exception as e:
+                        threestudio.warn(f"Error during segmentation controlnet pipeline with custom prompt: {e}")
+                        return rgb.permute(0, 3, 1, 2)
+                
+                else:
+                    # Use embeddings from prompt_utils (original behavior)
+                    prompt_embeds = text_embeddings[:1]  # Use the text conditioning
+
+                    # Convert rgb to PIL image for img2img
+                    rgb_np = rgb[0].detach().cpu().numpy()
+                    from PIL import Image
+                    import numpy as np
+                    init_image = Image.fromarray((rgb_np * 255).astype(np.uint8))
                     
-                    # Resize back to original dimensions if needed
-                    if resized:
-                        threestudio.info(f"Resizing output back to {width}x{height}")
-                        output_image = output_image.resize((width, height), Image.LANCZOS)
-                        
-                    output_tensor = torch.from_numpy(np.array(output_image)).float() / 255.0
-                    output_tensor = output_tensor.permute(2, 0, 1).unsqueeze(0)  # [1, 3, H, W]
+                    # Convert segmentation mask to PIL
+                    seg_np = cond_seg[0].detach().cpu().numpy()
+                    seg_image = Image.fromarray((seg_np * 255).astype(np.uint8))
                     
-                    threestudio.info("Successfully generated image with segmentation controlnet")
-                    return output_tensor
+                    # Get dimensions
+                    height, width = rgb.shape[1], rgb.shape[2]
                     
-                except Exception as e:
-                    threestudio.warn(f"Error during segmentation controlnet pipeline: {e}")
-                    return rgb.permute(0, 3, 1, 2)
+                    # Resize if needed - some models require specific dimensions
+                    if height != 512 or width != 512:
+                        threestudio.info(f"Resizing images from {width}x{height} to 512x512")
+                        init_image = init_image.resize((512, 512), Image.LANCZOS)
+                        seg_image = seg_image.resize((512, 512), Image.LANCZOS)
+                        resized = True
+                    else:
+                        resized = False
+
+                    # Run pipeline with embeddings
+                    try:
+                        threestudio.info("Running segmentation controlnet pipeline with text embeddings...")
+                        output = self.seg_controlnet_pipe(
+                            prompt_embeds=prompt_embeds,
+                            negative_prompt_embeds=negative_prompt_embeds,
+                            image=init_image,
+                            control_image=seg_image,
+                            num_inference_steps=100,
+                            guidance_scale=9.5,
+                            controlnet_conditioning_scale=1.5,
+                            strength=0.6,
+                        )
+                    except Exception as e:
+                        threestudio.warn(f"Error during segmentation controlnet pipeline: {e}")
+                        return rgb.permute(0, 3, 1, 2)
+                
+                # Convert output image back to tensor
+                output_image = output.images[0]
+                
+                # Resize back to original dimensions if needed
+                if resized:
+                    threestudio.info(f"Resizing output back to {width}x{height}")
+                    output_image = output_image.resize((width, height), Image.LANCZOS)
+                    
+                output_tensor = torch.from_numpy(np.array(output_image)).float() / 255.0
+                output_tensor = output_tensor.permute(2, 0, 1).unsqueeze(0)  # [1, 3, H, W]
+                
+                threestudio.info("Successfully generated image with segmentation controlnet")
+                return output_tensor
+                
         except Exception as e:
             threestudio.warn(f"Unexpected error in segmentation controlnet generation: {e}")
             return rgb.permute(0, 3, 1, 2)
