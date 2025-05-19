@@ -337,7 +337,86 @@ def save_images(object_file: str) -> None:
 
     # 세그멘테이션 처리 - 방법 2로 통일 (원본 메시의 정점 색상 사용)
     seg_obj = None
-    if 'v_color' in param and obj_1 is not None:
+    if 'seg_mesh' in param:
+        # 세그멘테이션용 메시 데이터가 존재하는 경우 (tree만 포함된 메시)
+        try:
+            print("Using pre-filtered mesh data for segmentation (trees only)")
+            seg_data = param['seg_mesh']
+            
+            # 새 세그멘테이션 메시 생성
+            seg_mesh = bpy.data.meshes.new("seg_mesh")
+            seg_obj = bpy.data.objects.new("SegmentationMesh", seg_mesh)
+            bpy.context.collection.objects.link(seg_obj)
+            
+            # 세그멘테이션 메시 데이터 업데이트
+            seg_mesh.from_pydata(seg_data['v_pos'],[],seg_data['t_pos_idx'])
+            seg_mesh.update()
+            
+            # 정점 색상 설정
+            if 'v_color' in seg_data and seg_obj is not None:
+                if not seg_obj.data.vertex_colors:
+                    seg_obj.data.vertex_colors.new(name="Col")
+                
+                color_layer = seg_obj.data.vertex_colors["Col"]
+                v_colors = seg_data['v_color']
+                
+                if v_colors.shape[1] >= 3:  # RGB 값 최소 필요
+                    mesh = seg_obj.data
+                    # 각 폴리곤(face)를 순회
+                    for poly_idx, poly in enumerate(mesh.polygons):
+                        # 해당 폴리곤을 구성하는 인덱스 순회
+                        for loop_idx in range(poly.loop_start, poly.loop_start + poly.loop_total):
+                            vertex_idx = mesh.loops[loop_idx].vertex_index
+                            # v_colors에서 색상을 가져와 색상 레이어에 할당
+                            if vertex_idx < len(v_colors):
+                                color_layer.data[loop_idx].color = (
+                                    v_colors[vertex_idx][0],
+                                    v_colors[vertex_idx][1],
+                                    v_colors[vertex_idx][2],
+                                    1.0 if v_colors.shape[1] < 4 else v_colors[vertex_idx][3]
+                                )
+            
+            # 스무스 설정
+            for polygon in seg_mesh.polygons:
+                polygon.use_smooth = True
+            seg_obj.data.update()
+            
+            # 세그멘테이션 마테리얼 생성
+            seg_mat = bpy.data.materials.new(name="SegmentationMaterial")
+            seg_mat.use_nodes = True
+            seg_tree = seg_mat.node_tree
+            seg_nodes = seg_tree.nodes
+            
+            # 기본 노드 제거
+            for node in seg_nodes:
+                seg_nodes.remove(node)
+            
+            # Emission 노드와 Material Output 노드 추가
+            emission_node = seg_nodes.new(type='ShaderNodeEmission')
+            output_node = seg_nodes.new(type='ShaderNodeOutputMaterial')
+            
+            # 정점 색상 노드 추가
+            vc_node = seg_nodes.new(type='ShaderNodeVertexColor')
+            vc_node.layer_name = "Col"  # 생성한 정점 색상 레이어 사용
+            
+            # 노드 연결
+            seg_tree.links.new(vc_node.outputs['Color'], emission_node.inputs['Color'])
+            seg_tree.links.new(emission_node.outputs['Emission'], output_node.inputs['Surface'])
+            
+            # 복제된 객체에 세그멘테이션 마테리얼 할당
+            if seg_obj.data.materials:
+                seg_obj.data.materials[0] = seg_mat
+            else:
+                seg_obj.data.materials.append(seg_mat)
+            
+            # 세그멘테이션 객체 초기 렌더링 숨김
+            seg_obj.hide_render = True
+            
+            print("Successfully set up segmentation with pre-filtered tree mesh")
+        except Exception as e:
+            print(f"Error setting up segmentation mesh: {e}")
+            # 세그멘테이션 없이 계속 진행
+    elif 'v_color' in param and obj_1 is not None:
         try:
             print("Applying vertex colors from pickle data to original mesh for segmentation")
             # 정점 색상 레이어 생성

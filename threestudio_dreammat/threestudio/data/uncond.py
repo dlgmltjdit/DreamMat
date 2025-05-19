@@ -571,21 +571,32 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
                             additional_colors = np.random.random((num_labels - len(color_map), 3))
                             color_map = np.vstack([color_map, additional_colors])
                         
+                        # 일반 렌더링용 데이터와 세그멘테이션용 데이터를 분리해서 처리
+                        # 원본 데이터 백업
+                        original_data = data.copy()
+                        
+                        # tree에 해당하는 레이블 목록
+                        tree_indices = [0, 2, 3, 10]
+                        
                         # house에 해당하는 레이블 목록
                         house_labels = [1, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16]
                         
-                        # house가 아닌 face만 필터링
-                        non_house_mask = np.array([label not in house_labels for label in seg_labels])
-                        threestudio.info(f"Keeping {non_house_mask.sum()} out of {len(seg_labels)} faces (removing house)")
+                        # 세그멘테이션용 렌더링 (tree만 유지)
+                        # tree face만 필터링 (house face 제외)
+                        tree_mask = np.array([label in tree_indices for label in seg_labels])
+                        threestudio.info(f"세그멘테이션용: {tree_mask.sum()} faces 유지됨 (tree만)")
                         
-                        # house가 아닌 face만 남긴 새로운 t_pos_idx 생성
-                        filtered_t_pos_idx = data['t_pos_idx'][non_house_mask]
+                        # tree face만 남긴 새로운 t_pos_idx 생성
+                        filtered_t_pos_idx = data['t_pos_idx'][tree_mask]
+                        
+                        # tree face만 남긴 새로운 seg_labels 
+                        filtered_seg_labels = seg_labels[tree_mask]
                         
                         # 업데이트된 face 인덱스로 데이터 교체
                         data['t_pos_idx'] = filtered_t_pos_idx
                         
-                        # 파일터링된 face에 대한 색상만 계산
-                        face_colors = color_map[seg_labels[non_house_mask]]
+                        # 각 face에 색상 할당 (tree 색상)
+                        face_colors = color_map[filtered_seg_labels]
                         
                         # vertex colors 계산 (face colors에서 평균 계산)
                         vertex_colors = np.zeros((len(data['v_pos']), 3), dtype=np.float32)
@@ -608,6 +619,7 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
                         
                         # data에 vertex color 추가
                         data['v_color'] = vertex_colors_with_alpha
+                        threestudio.info(f"Added vertex colors from segmentation labels to original mesh (trees only)")
                     else:
                         threestudio.warn(f"Segmentation labels count ({len(seg_labels)}) doesn't match face count ({len(data['t_pos_idx'])})")
                 else:
@@ -616,13 +628,58 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
                 threestudio.warn(f"Failed to apply segmentation colors to original mesh: {str(e)}")
             
             os.makedirs('temp', exist_ok=True)
+            
+            # tree만 필터링된 메시를 세그멘테이션 렌더링용으로 저장
+            seg_data = {
+                'v_pos': data['v_pos'],                 # 정점 위치는 원본과 동일
+                't_pos_idx': data['t_pos_idx'],         # 이미 tree만 필터링된 face indices
+                'v_color': vertex_colors_with_alpha     # 정점 색상 정보
+            }
+            
+            # 세그멘테이션 디렉토리 생성
+            seg_dir = f"{self.temp_image_save_dir}/seg"
+            os.makedirs(seg_dir, exist_ok=True)
+            
+            # 전체 메시 데이터 준비 (일반 렌더링용)
+            # 원본 데이터로 복원
+            data = original_data
+            
+            # 각 face에 색상 할당 (전체 메시)
+            face_colors = color_map[seg_labels]
+            
+            # vertex colors 계산 (face colors에서 평균 계산)
+            vertex_colors = np.zeros((len(data['v_pos']), 3), dtype=np.float32)
+            vertex_count = np.zeros(len(data['v_pos']), dtype=np.int32)
+            
+            # 각 face의 색상을 해당 face의 vertex에 할당
+            for i, face in enumerate(data['t_pos_idx']):
+                for vertex_idx in face:
+                    vertex_colors[vertex_idx] += face_colors[i]
+                    vertex_count[vertex_idx] += 1
+            
+            # 평균 계산
+            for i in range(len(vertex_colors)):
+                if vertex_count[i] > 0:
+                    vertex_colors[i] /= vertex_count[i]
+            
+            # 알파 채널 추가
+            vertex_colors_with_alpha = np.ones((len(data['v_pos']), 4), dtype=np.float32)
+            vertex_colors_with_alpha[:, :3] = vertex_colors
+            
+            # 색상 데이터 추가
+            data['v_color'] = vertex_colors_with_alpha
+            data['seg_mesh'] = seg_data  # 세그멘테이션용 메시 데이터를 함께 전달
+            
+            # 모든 데이터를 포함한 피클 저장
             pkl_path = 'temp/render_fixview_temp.pkl'
             with open(pkl_path, 'wb') as f:
                 pickle.dump(data, f)
             
+            # Blender 한 번만 실행 (모든 렌더링 동시에)
             cmd = f'blender -b -P ./threestudio/data/blender_script_fixview.py -- --param_dir {pkl_path} --env_dir {envmap_dir} --output_dir {self.temp_image_save_dir} --num_images {self.cfg.fix_view_num}'
             print(cmd)
             print("pre-rendering light conditions...please wait for about 15min")
+            
             # Execute the command and capture output
             process = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             # Check return code
