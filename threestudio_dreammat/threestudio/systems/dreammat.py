@@ -93,7 +93,7 @@ class DreamMat(BaseLift3DSystem):
                 # Generate segmentation controlnet image only when saving train images
                 
                 # Custom prompt for trees or building parts in the segmentation mask
-                custom_prompt = "Blue trees"
+                custom_prompt = "Red trees"
                 
                 seg_controlnet_output = self.guidance.generate_with_segmentation_controlnet(
                     prompt_utils,
@@ -102,7 +102,8 @@ class DreamMat(BaseLift3DSystem):
                     batch['elevation'],
                     batch['azimuth'],
                     batch['camera_distances'],
-                    custom_prompt=custom_prompt
+                    custom_prompt=custom_prompt,
+                    blend_alpha=0.85,  # Higher blend factor to make the generated trees more visible
                 )
                 
                 # Convert from BCHW to BHWC for display

@@ -67,6 +67,9 @@ class StableDiffusionLightGuidance(BaseObject):
         p2p_condition_type: str = 'p2p'
         canny_lower_bound: int = 50
         canny_upper_bound: int = 100
+        default_blend_alpha: float = 0.7  # Default blend factor for mixing original and segmentation-generated images
+        seg_mask_threshold: float = 0.05  # Threshold for creating binary mask from segmentation
+        apply_mask_smoothing: bool = True  # Whether to apply Gaussian blur to smooth mask edges
 
         min_step_percent: float = 0.02
         max_step_percent: float = 0.98
@@ -695,7 +698,12 @@ class StableDiffusionLightGuidance(BaseObject):
         azimuth: Float[Tensor, "B"],
         camera_distances: Float[Tensor, "B"],
         custom_prompt: str = None,
+        blend_alpha: float = None,  # Blend factor for mixing original and generated images
     ):
+        # Use config default if no blend_alpha is provided
+        if blend_alpha is None:
+            blend_alpha = self.cfg.default_blend_alpha
+            
         # Check if the pipeline was successfully initialized
         if self.seg_controlnet_pipe is None:
             threestudio.warn("Segmentation controlnet pipeline not available, returning original image")
@@ -820,11 +828,49 @@ class StableDiffusionLightGuidance(BaseObject):
                     threestudio.info(f"Resizing output back to {width}x{height}")
                     output_image = output_image.resize((width, height), Image.LANCZOS)
                     
-                output_tensor = torch.from_numpy(np.array(output_image)).float() / 255.0
-                output_tensor = output_tensor.permute(2, 0, 1).unsqueeze(0)  # [1, 3, H, W]
+                # Convert to tensor
+                generated_tensor = torch.from_numpy(np.array(output_image)).float() / 255.0
                 
-                threestudio.info("Successfully generated image with segmentation controlnet")
-                return output_tensor
+                # Create binary mask from segmentation
+                # Average the color channels and threshold to create a binary mask
+                # Note: This assumes that non-zero values in seg_np represent areas of interest
+                seg_mask = (seg_np.mean(axis=2) > self.cfg.seg_mask_threshold).astype(np.float32)
+                
+                # Apply Gaussian blur to smooth mask edges if configured
+                if self.cfg.apply_mask_smoothing:
+                    # Apply a small Gaussian blur to create smoother transitions
+                    kernel_size = int(min(height, width) * 0.01) // 2 * 2 + 1  # Ensure odd kernel size
+                    kernel_size = max(3, min(kernel_size, 15))  # Keep kernel size in reasonable range
+                    threestudio.info(f"Applying Gaussian blur to mask edges with kernel size {kernel_size}")
+                    seg_mask = cv2.GaussianBlur(seg_mask, (kernel_size, kernel_size), 0)
+                
+                seg_mask_tensor = torch.from_numpy(seg_mask).float()
+                
+                # Blend the generated image with the original image using the mask
+                # Expand mask dimensions for broadcasting
+                seg_mask_tensor = seg_mask_tensor.unsqueeze(-1).repeat(1, 1, 3)
+                
+                # Apply the mask and blend factor
+                # Use segmentation mask to determine where to apply the generated content
+                original_tensor = torch.from_numpy(rgb_np).float()
+                
+                # Blend: Use blend_alpha for control over how much of generated image to use
+                threestudio.info(f"Blending original image with generated image using segmentation mask (blend_alpha={blend_alpha:.2f})")
+                blended_tensor = original_tensor * (1 - seg_mask_tensor * blend_alpha) + \
+                                generated_tensor * (seg_mask_tensor * blend_alpha)
+                
+                # Ensure values are in [0, 1]
+                blended_tensor = torch.clamp(blended_tensor, 0.0, 1.0)
+                
+                # Log info about masked area
+                masked_area_percent = seg_mask.mean() * 100
+                threestudio.info(f"Segmentation mask covers {masked_area_percent:.2f}% of the image")
+                
+                # Format for return - [B, C, H, W]
+                blended_tensor = blended_tensor.permute(2, 0, 1).unsqueeze(0)
+                
+                threestudio.info("Successfully generated and blended image with segmentation controlnet")
+                return blended_tensor
                 
         except Exception as e:
             threestudio.warn(f"Unexpected error in segmentation controlnet generation: {e}")
