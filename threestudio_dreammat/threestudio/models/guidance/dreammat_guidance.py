@@ -67,7 +67,6 @@ class StableDiffusionLightGuidance(BaseObject):
         p2p_condition_type: str = 'p2p'
         canny_lower_bound: int = 50
         canny_upper_bound: int = 100
-        default_blend_alpha: float = 0.7  # Default blend factor for mixing original and segmentation-generated images
         seg_mask_threshold: float = 0.05  # Threshold for creating binary mask from segmentation
         apply_mask_smoothing: bool = True  # Whether to apply Gaussian blur to smooth mask edges
 
@@ -698,181 +697,96 @@ class StableDiffusionLightGuidance(BaseObject):
         azimuth: Float[Tensor, "B"],
         camera_distances: Float[Tensor, "B"],
         custom_prompt: str = None,
-        blend_alpha: float = None,  # Blend factor for mixing original and generated images
+        blend_alpha: float = 0.7,  # Blend factor for mixing original and generated images
     ):
-        # Use config default if no blend_alpha is provided
-        if blend_alpha is None:
-            blend_alpha = self.cfg.default_blend_alpha
             
         # Check if the pipeline was successfully initialized
         if self.seg_controlnet_pipe is None:
             threestudio.warn("Segmentation controlnet pipeline not available, returning original image")
             return rgb.permute(0, 3, 1, 2)
+        
+        # Get dimensions of the input image
+        height, width = rgb.shape[1], rgb.shape[2]
             
-        try:
-            # Always get text embeddings for negative prompt
-            text_embeddings = prompt_utils.get_text_embeddings(
-                elevation,
-                azimuth,
-                camera_distances,
-                self.cfg.view_dependent_prompting,
-                return_null_text_embeddings=True,
-            )
+        # Convert rgb to PIL image
+        rgb_np = rgb[0].detach().cpu().numpy()
+        from PIL import Image
+        import numpy as np
+        init_image = Image.fromarray((rgb_np * 255).astype(np.uint8))
             
-            negative_prompt_embeds = text_embeddings[1:2]  # Use the original unconditional embedding
+        # Convert segmentation mask to PIL
+        seg_np = cond_seg[0].detach().cpu().numpy()
+        seg_image = Image.fromarray((seg_np * 255).astype(np.uint8))
+
+        # Prepare text embeddings
+        text_embeddings = prompt_utils.get_text_embeddings(
+            elevation, azimuth, camera_distances,
+            self.cfg.view_dependent_prompting,
+            return_null_text_embeddings=True
+        )
             
-            # Generate image using the segmentation controlnet
-            threestudio.info("Generating image with segmentation controlnet...")
-            with torch.no_grad():
-                # Use custom prompt if provided
-                if custom_prompt is not None:
-                    threestudio.info(f"Using custom prompt: '{custom_prompt}' with original negative prompt")
-                    
-                    # Convert rgb to PIL image for img2img
-                    rgb_np = rgb[0].detach().cpu().numpy()
-                    from PIL import Image
-                    import numpy as np
-                    init_image = Image.fromarray((rgb_np * 255).astype(np.uint8))
-                    
-                    # Convert segmentation mask to PIL
-                    seg_np = cond_seg[0].detach().cpu().numpy()
-                    seg_image = Image.fromarray((seg_np * 255).astype(np.uint8))
-                    
-                    # Get dimensions
-                    height, width = rgb.shape[1], rgb.shape[2]
-                    
-                    # Resize if needed - some models require specific dimensions
-                    if height != 512 or width != 512:
-                        threestudio.info(f"Resizing images from {width}x{height} to 512x512")
-                        init_image = init_image.resize((512, 512), Image.LANCZOS)
-                        seg_image = seg_image.resize((512, 512), Image.LANCZOS)
-                        resized = True
-                    else:
-                        resized = False
+        # Get negative prompt embeddings
+        negative_prompt_embeds = text_embeddings[1:2]
 
-                    # Encode the custom prompt
-                    inputs = self.pipe.tokenizer(
-                        [custom_prompt],
-                        padding="max_length",
-                        max_length=self.pipe.tokenizer.model_max_length,
-                        truncation=True,
-                        return_tensors="pt",
-                    )
-                    custom_prompt_embeds = self.pipe.text_encoder(inputs.input_ids.to(self.device))[0]
-                    
-                    # Run pipeline with custom prompt and original negative prompt
-                    try:
-                        threestudio.info("Running segmentation controlnet pipeline with custom prompt...")
-                        output = self.seg_controlnet_pipe(
-                            prompt_embeds=custom_prompt_embeds,
-                            negative_prompt_embeds=negative_prompt_embeds,
-                            image=init_image,
-                            control_image=seg_image,
-                            num_inference_steps=100,
-                            guidance_scale=9.5,
-                            controlnet_conditioning_scale=1.5,
-                            strength=0.6,
-                        )
-                    except Exception as e:
-                        threestudio.warn(f"Error during segmentation controlnet pipeline with custom prompt: {e}")
-                        return rgb.permute(0, 3, 1, 2)
-                
-                else:
-                    # Use embeddings from prompt_utils (original behavior)
-                    prompt_embeds = text_embeddings[:1]  # Use the text conditioning
+        threestudio.info(f"Using prompt: '{custom_prompt}'")
+        inputs = self.pipe.tokenizer(
+            [custom_prompt],
+            padding="max_length",
+            max_length=self.pipe.tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+        prompt_embeds = self.pipe.text_encoder(inputs.input_ids.to(self.device))[0]
+            
+        # Run pipeline
+        threestudio.info("Running segmentation controlnet pipeline...")
+        output = self.seg_controlnet_pipe(
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            image=init_image,
+            control_image=seg_image,
+            num_inference_steps=100,
+            guidance_scale=9.5,
+            controlnet_conditioning_scale=1.5,
+            strength=0.6,
+        )
+            
+        # Convert output image back to tensor
+        output_image = output.images[0]
 
-                    # Convert rgb to PIL image for img2img
-                    rgb_np = rgb[0].detach().cpu().numpy()
-                    from PIL import Image
-                    import numpy as np
-                    init_image = Image.fromarray((rgb_np * 255).astype(np.uint8))
-                    
-                    # Convert segmentation mask to PIL
-                    seg_np = cond_seg[0].detach().cpu().numpy()
-                    seg_image = Image.fromarray((seg_np * 255).astype(np.uint8))
-                    
-                    # Get dimensions
-                    height, width = rgb.shape[1], rgb.shape[2]
-                    
-                    # Resize if needed - some models require specific dimensions
-                    if height != 512 or width != 512:
-                        threestudio.info(f"Resizing images from {width}x{height} to 512x512")
-                        init_image = init_image.resize((512, 512), Image.LANCZOS)
-                        seg_image = seg_image.resize((512, 512), Image.LANCZOS)
-                        resized = True
-                    else:
-                        resized = False
+        # Convert to tensor
+        generated_tensor = torch.from_numpy(np.array(output_image)).float() / 255.0
+        
+        # Create binary mask from segmentation
+        seg_mask = (seg_np.mean(axis=2) > self.cfg.seg_mask_threshold).astype(np.float32)
 
-                    # Run pipeline with embeddings
-                    try:
-                        threestudio.info("Running segmentation controlnet pipeline with text embeddings...")
-                        output = self.seg_controlnet_pipe(
-                            prompt_embeds=prompt_embeds,
-                            negative_prompt_embeds=negative_prompt_embeds,
-                            image=init_image,
-                            control_image=seg_image,
-                            num_inference_steps=100,
-                            guidance_scale=9.5,
-                            controlnet_conditioning_scale=1.5,
-                            strength=0.6,
-                        )
-                    except Exception as e:
-                        threestudio.warn(f"Error during segmentation controlnet pipeline: {e}")
-                        return rgb.permute(0, 3, 1, 2)
-                
-                # Convert output image back to tensor
-                output_image = output.images[0]
-                
-                # Resize back to original dimensions if needed
-                if resized:
-                    threestudio.info(f"Resizing output back to {width}x{height}")
-                    output_image = output_image.resize((width, height), Image.LANCZOS)
-                    
-                # Convert to tensor
-                generated_tensor = torch.from_numpy(np.array(output_image)).float() / 255.0
-                
-                # Create binary mask from segmentation
-                # Average the color channels and threshold to create a binary mask
-                # Note: This assumes that non-zero values in seg_np represent areas of interest
-                seg_mask = (seg_np.mean(axis=2) > self.cfg.seg_mask_threshold).astype(np.float32)
-                
-                # Apply Gaussian blur to smooth mask edges if configured
-                if self.cfg.apply_mask_smoothing:
-                    # Apply a small Gaussian blur to create smoother transitions
-                    kernel_size = int(min(height, width) * 0.01) // 2 * 2 + 1  # Ensure odd kernel size
-                    kernel_size = max(3, min(kernel_size, 15))  # Keep kernel size in reasonable range
-                    threestudio.info(f"Applying Gaussian blur to mask edges with kernel size {kernel_size}")
-                    seg_mask = cv2.GaussianBlur(seg_mask, (kernel_size, kernel_size), 0)
-                
-                seg_mask_tensor = torch.from_numpy(seg_mask).float()
-                
-                # Blend the generated image with the original image using the mask
-                # Expand mask dimensions for broadcasting
-                seg_mask_tensor = seg_mask_tensor.unsqueeze(-1).repeat(1, 1, 3)
-                
-                # Apply the mask and blend factor
-                # Use segmentation mask to determine where to apply the generated content
-                original_tensor = torch.from_numpy(rgb_np).float()
-                
-                # Blend: Use blend_alpha for control over how much of generated image to use
-                threestudio.info(f"Blending original image with generated image using segmentation mask (blend_alpha={blend_alpha:.2f})")
-                blended_tensor = original_tensor * (1 - seg_mask_tensor * blend_alpha) + \
-                                generated_tensor * (seg_mask_tensor * blend_alpha)
-                
-                # Ensure values are in [0, 1]
-                blended_tensor = torch.clamp(blended_tensor, 0.0, 1.0)
-                
-                # Log info about masked area
-                masked_area_percent = seg_mask.mean() * 100
-                threestudio.info(f"Segmentation mask covers {masked_area_percent:.2f}% of the image")
-                
-                # Format for return - [B, C, H, W]
-                blended_tensor = blended_tensor.permute(2, 0, 1).unsqueeze(0)
-                
-                threestudio.info("Successfully generated and blended image with segmentation controlnet")
-                return blended_tensor
-                
-        except Exception as e:
-            threestudio.warn(f"Unexpected error in segmentation controlnet generation: {e}")
-            return rgb.permute(0, 3, 1, 2)
-    
+        kernel_size = int(min(height, width) * 0.01) // 2 * 2 + 1  # Ensure odd kernel size
+        kernel_size = max(3, min(kernel_size, 15))  # Keep kernel size in reasonable range
+        seg_mask = cv2.GaussianBlur(seg_mask, (kernel_size, kernel_size), 0)
+        seg_mask_tensor = torch.from_numpy(seg_mask).float()
+            
+        # Expand mask dimensions for broadcasting
+        seg_mask_tensor = seg_mask_tensor.unsqueeze(-1).repeat(1, 1, 3)
+            
+        # Get original tensor
+        original_tensor = torch.from_numpy(rgb_np).float()
+            
+        # Blend images
+        blended_tensor = original_tensor * (1 - seg_mask_tensor * blend_alpha) + \
+                         generated_tensor * (seg_mask_tensor * blend_alpha)
+            
+        # Ensure values are in [0, 1]
+        blended_tensor = torch.clamp(blended_tensor, 0.0, 1.0)
+            
+        # Log info about masked area
+        masked_area_percent = seg_mask.mean() * 100
+        threestudio.info(f"Segmentation mask covers {masked_area_percent:.2f}% of the image")
+            
+        # Format for return - [B, C, H, W]
+        blended_tensor = blended_tensor.permute(2, 0, 1).unsqueeze(0)
+        
+        # Move the blended tensor to the correct device
+        blended_tensor = blended_tensor.to(self.device)
+            
+        threestudio.info("Successfully generated and blended image with segmentation controlnet")
+        return blended_tensor

@@ -30,7 +30,8 @@ class DreamMat(BaseLift3DSystem):
         init_step: int = 0
         init_width:int=512
         init_height:int=512
-        test_background_white: Optional[bool] = False
+
+        custom_prompt:str="Black trees"
 
     cfg: Config
 
@@ -58,18 +59,12 @@ class DreamMat(BaseLift3DSystem):
             self.geometry.initialize_shape()
 
     def training_step(self, batch, batch_idx):
-        
         prompt_utils = self.prompt_processor()
         out = self(batch)
-        guidance_inp = out["comp_rgb"]
+        guidance_inp = out["comp_rgb"]  # 원본 렌더링 이미지 (HWC 형식)
         batch['cond_normal']=out.get('comp_normal', None)
         batch['cond_depth']=out.get('comp_depth', None)
 
-        # Store last generated segmentation controlnet image
-        if not hasattr(self, 'seg_controlnet_image'):
-            self.seg_controlnet_image = None
-
-        # Use the original rendered image for guidance
         guidance_out = self.guidance(
             guidance_inp, prompt_utils, **batch, rgb_as_latents=False, 
         )
@@ -89,11 +84,9 @@ class DreamMat(BaseLift3DSystem):
             self.log(f"train_params/{name}", self.C(value))
 
         if self.cfg.save_train_image:
-            if self.true_global_step%self.cfg.save_train_image_iter == 0:
-                # Generate segmentation controlnet image only when saving train images
-                
-                # Custom prompt for trees or building parts in the segmentation mask
-                custom_prompt = "Red trees"
+            if self.true_global_step % self.cfg.save_train_image_iter == 0:
+                # Generate image with Segmentation ControlNet
+                custom_prompt = self.cfg.custom_prompt
                 
                 seg_controlnet_output = self.guidance.generate_with_segmentation_controlnet(
                     prompt_utils,
@@ -106,28 +99,13 @@ class DreamMat(BaseLift3DSystem):
                     blend_alpha=0.85,  # Higher blend factor to make the generated trees more visible
                 )
                 
-                # Convert from BCHW to BHWC for display
-                seg_controlnet_image = seg_controlnet_output.permute(0, 2, 3, 1)
-                
-                # Save for potential reuse
-                self.seg_controlnet_image = seg_controlnet_image
-                
-                # Ensure all images have the same dimensions
-                height, width = guidance_inp.shape[1], guidance_inp.shape[2]
-                if seg_controlnet_image.shape[1] != height or seg_controlnet_image.shape[2] != width:
-                    # Resize seg_controlnet_image to match guidance_inp dimensions
-                    seg_controlnet_image = F.interpolate(
-                        seg_controlnet_image.permute(0, 3, 1, 2),  # BHWC -> BCHW
-                        size=(height, width),
-                        mode="bilinear",
-                        align_corners=False
-                    ).permute(0, 2, 3, 1)  # BCHW -> BHWC
+                seg_img = seg_controlnet_output.permute(0, 2, 3, 1)
                 
                 # Image row : train
                 train_images_row = [
                     {
                         "type": "rgb",
-                        "img": out["comp_rgb"][0],
+                        "img": out["comp_rgb"][0],  # 원본 렌더링 이미지
                         "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
                     },
                     {
@@ -165,11 +143,9 @@ class DreamMat(BaseLift3DSystem):
                         "img": out["roughness"][0, :, :, 0],
                         "kwargs": {"cmap": None, "data_range": (0, 1)},
                     },
-                    
-                    # Add segmentation controlnet generated image
                     {
                         "type": "rgb",
-                        "img": seg_controlnet_image[0],
+                        "img": seg_img[0],
                         "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
                     },
                 ]
@@ -216,8 +192,6 @@ class DreamMat(BaseLift3DSystem):
                         "img": batch["condition_map"][0, :, :, 19:22],
                         "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
                     },
-                    
-                    # Add segmentation condition
                     {
                         "type": "rgb",
                         "img": batch["cond_seg"][0],
@@ -299,8 +273,39 @@ class DreamMat(BaseLift3DSystem):
         pass
 
     def test_step(self, batch):
+        # Get prompt utilities for test time
+        prompt_utils = self.prompt_processor()
+        
         out = self(batch)
-        srgb=out["comp_rgb"][0].detach()
+        srgb = out["comp_rgb"][0].detach()
+        
+        # Generate image with Segmentation ControlNet
+        custom_prompt = self.cfg.custom_prompt
+        seg_controlnet_output = self.guidance.generate_with_segmentation_controlnet(
+            prompt_utils,
+            srgb.unsqueeze(0),  # Need batch dimension
+            batch['cond_seg'],
+            batch['elevation'],
+            batch['azimuth'],
+            batch['camera_distances'],
+            custom_prompt=custom_prompt,
+            blend_alpha=0.85,  # Higher blend factor to make the generated trees more visible
+        )
+        
+        # Convert to image format
+        seg_img = seg_controlnet_output.permute(0, 2, 3, 1)[0]
+        
+        # Make sure the seg_render directory exists
+        os.makedirs(f"it{self.true_global_step}-test/seg_render", exist_ok=True)
+        os.makedirs(f"it{self.true_global_step}-test/seg_mask", exist_ok=True)
+        
+        # 세그멘테이션 마스크도 저장
+        seg_mask = batch['cond_seg'][0]
+        self.save_img(seg_mask, f"it{self.true_global_step}-test/seg_mask/{batch['index'][0]}.png")
+        
+        # Save the segmentation-processed image separately
+        self.save_img(seg_img, f"it{self.true_global_step}-test/seg_render/{batch['index'][0]}.png")
+        
         self.save_image_grid(
             f"it{self.true_global_step}-test/view/{batch['index'][0]}.png",
             (
@@ -308,6 +313,16 @@ class DreamMat(BaseLift3DSystem):
                     {
                         "type": "rgb",
                         "img": srgb,
+                        "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
+                    },
+                    {
+                        "type": "rgb",
+                        "img": seg_mask,
+                        "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
+                    },
+                    {
+                        "type": "rgb",
+                        "img": seg_img,
                         "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
                     }
                 ]
@@ -340,14 +355,16 @@ class DreamMat(BaseLift3DSystem):
             step=self.true_global_step,
         )
         
-        mask=out["opacity"][0].detach()
-        albedo=out["albedo"][0].detach()
-        roughness=out["roughness"][0].detach().repeat(1,1,3)
-        metallic=out["metalness"][0].detach().repeat(1,1,3)
+        mask = out["opacity"][0].detach()
+        albedo = out["albedo"][0].detach()
+        roughness = out["roughness"][0].detach().repeat(1,1,3)
+        metallic = out["metalness"][0].detach().repeat(1,1,3)
         self.save_img(torch.cat((albedo,mask),2),f"it{self.true_global_step}-test/albedo/{batch['index'][0]}.png")
         self.save_img(torch.cat((roughness,mask),2),f"it{self.true_global_step}-test/roughness/{batch['index'][0]}.png")
         self.save_img(torch.cat((metallic,mask),2),f"it{self.true_global_step}-test/metallic/{batch['index'][0]}.png")
         self.save_img(torch.cat((srgb,mask),2),f"it{self.true_global_step}-test/render/{batch['index'][0]}.png")
+        # Save the segmentation result with mask
+        self.save_img(torch.cat((seg_img,mask),2),f"it{self.true_global_step}-test/seg_render/{batch['index'][0]}.png")
 
     def on_test_epoch_end(self):
         viewpath="it"+str(self.true_global_step)+"-test/view"

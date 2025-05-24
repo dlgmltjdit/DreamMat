@@ -25,8 +25,10 @@ import subprocess,os
 import pickle
 import cv2
 import numpy as np
+
 def fovy_to_focal(fovy, sensor_height):
     return sensor_height / (2 * math.tan(fovy / 2))
+
 @dataclass
 class RandomCameraDataModuleConfig:
     # height, width, and batch_size should be Union[int, List[int]]
@@ -337,6 +339,36 @@ class RandomCameraIterableDataset(IterableDataset, Updateable):
             "width": self.width,
         }
 
+def xfm_vectors(vectors, matrix):
+    out = torch.matmul(torch.nn.functional.pad(vectors, pad=(0,1), mode='constant', value=0.0), torch.transpose(matrix, 1, 2))[..., 0:3].contiguous()
+    if torch.is_anomaly_enabled():
+        assert torch.all(torch.isfinite(out)), "Output of xfm_vectors contains inf or NaN"
+    return out
+
+def saveimg(img,path):
+    from PIL import Image
+    # Ensure img is a numpy array before creating PIL Image
+    if not isinstance(img, np.ndarray):
+        img = img.detach().cpu().numpy()
+    # Handle potential different shapes (e.g., (H, W, 1) or (H, W, 3))
+    if img.ndim == 3 and img.shape[-1] == 1:
+        img = img.squeeze(-1) # Remove last dimension if it's 1
+    # Convert to uint8 (0-255)
+    img = (img * 255).astype(np.uint8)
+    # Ensure correct shape for PIL Image.fromarray
+    if img.ndim == 2:
+         img = np.stack([img]*3, axis=-1) # Convert grayscale to RGB if needed
+    img = Image.fromarray(img)
+    img.save(path)
+
+def loadrgb(imgpath,dim):
+    img = cv2.imread(imgpath,cv2.IMREAD_UNCHANGED)
+    img = cv2.resize(img, dim, interpolation = cv2.INTER_AREA)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    img = img.astype(np.float32) / 255.0
+    return img
+
 class FixCameraIterableDataset(IterableDataset, Updateable):
 
     def render_oneview_gt(self, view_id):
@@ -415,19 +447,6 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
         miss_mask = depth >= 10
         hit_mask = ~miss_mask
 
-        
-
-        def xfm_vectors(vectors, matrix):
-            out = torch.matmul(torch.nn.functional.pad(vectors, pad=(0,1), mode='constant', value=0.0), torch.transpose(matrix, 1, 2))[..., 0:3].contiguous()
-            if torch.is_anomaly_enabled():
-                assert torch.all(torch.isfinite(out)), "Output of xfm_vectors contains inf or NaN"
-            return out
-        
-        def saveimg(img,path):
-            from PIL import Image
-            img=img.detach().reshape(self.height,self.width,3).cpu().numpy()
-            img=Image.fromarray((img*255).astype(np.uint8))
-            img.save(path)
         
 
         normal_view  = xfm_vectors(normals[hit_mask].view(view_id.shape[0], normals[hit_mask].shape[0], normals[hit_mask].shape[1]), w2c.to(normals.device)).view(*normals[hit_mask].shape)
@@ -526,160 +545,67 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
             data['focal_length'] = focal_length.cpu().numpy()
             data['c2w']       = c2w.cpu().numpy()
 
-            # 원래 GLB 파일로 세그멘테이션 메시를 처리하던 방식 제거
-            # 세그멘테이션 레이블을 원본 메시에 직접 적용
+            # --- 세그멘테이션 정보 처리 방식 통일 - 방법 2로 통일 ---
+            # 원래 GLB 파일로 세그멘테이션 메시를 처리하던 방식을 제거하고,
+            # 세그멘테이션 레이블을 원본 메시에 직접 적용하는 방식으로 통일합니다.
+            
             # 세그멘테이션 레이블 데이터 로드
-            try:
-                import numpy as np
-                
-                # 세그멘테이션 레이블 파일 경로
-                seg_labels_path = "load/shapes/seg/ruined_house.npy"
-                if os.path.exists(seg_labels_path):
-                    seg_labels = np.load(seg_labels_path)
-                    
-                    # face 수가 일치하는지 확인
-                    if len(seg_labels) == len(data['t_pos_idx']):
-                        threestudio.info(f"Loaded segmentation labels: {seg_labels.shape}, unique labels: {np.unique(seg_labels)}")
-                        
-                        # 색상 맵 정의 (레이블 -> RGB 색상)
-                        # 고유한 색상을 위해 각 레이블별 고정 색상 사용
-                        num_labels = int(np.max(seg_labels)) + 1
-                        
-                        # 고정된 색상 매핑 정의
-                        color_map = np.array([
-                            [4/255.0, 200/255.0, 3/255.0], # 0 : tree
-                            [0.0, 0.0, 0.0], # 1 : house
-                            [4/255.0, 200/255.0, 3/255.0], # 2 : tree
-                            [4/255.0, 200/255.0, 3/255.0], # 3 : tree
-                            [0.0, 0.0, 0.0], # 4 : house
-                            [0.0, 0.0, 0.0], # 5 : house
-                            [0.0, 0.0, 0.0], # 6 : house
-                            [0.0, 0.0, 0.0], # 7 : house
-                            [0.0, 0.0, 0.0], # 8 : house
-                            [0.0, 0.0, 0.0], # 9 : house
-                            [4/255.0, 200/255.0, 3/255.0], # 10 : tree
-                            [0.0, 0.0, 0.0], # 11 : house
-                            [0.0, 0.0, 0.0], # 12 : house
-                            [0.0, 0.0, 0.0], # 13 : house
-                            [0.0, 0.0, 0.0], # 14 : house
-                            [0.0, 0.0, 0.0], # 15 : house
-                            [0.0, 0.0, 0.0], # 16 : house
-                        ], dtype=np.float32)
-                        
-                        # 레이블 수가 color_map보다 많으면 추가 색상 생성
-                        if num_labels > len(color_map):
-                            additional_colors = np.random.random((num_labels - len(color_map), 3))
-                            color_map = np.vstack([color_map, additional_colors])
-                        
-                        # 일반 렌더링용 데이터와 세그멘테이션용 데이터를 분리해서 처리
-                        # 원본 데이터 백업
-                        original_data = data.copy()
-                        
-                        # tree에 해당하는 레이블 목록
-                        tree_indices = [0, 2, 3, 10]
-                        
-                        # house에 해당하는 레이블 목록
-                        house_labels = [1, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16]
-                        
-                        # 세그멘테이션용 렌더링 (tree만 유지)
-                        # tree face만 필터링 (house face 제외)
-                        tree_mask = np.array([label in tree_indices for label in seg_labels])
-                        threestudio.info(f"세그멘테이션용: {tree_mask.sum()} faces 유지됨 (tree만)")
-                        
-                        # tree face만 남긴 새로운 t_pos_idx 생성
-                        filtered_t_pos_idx = data['t_pos_idx'][tree_mask]
-                        
-                        # tree face만 남긴 새로운 seg_labels 
-                        filtered_seg_labels = seg_labels[tree_mask]
-                        
-                        # 업데이트된 face 인덱스로 데이터 교체
-                        data['t_pos_idx'] = filtered_t_pos_idx
-                        
-                        # 각 face에 색상 할당 (tree 색상)
-                        face_colors = color_map[filtered_seg_labels]
-                        
-                        # vertex colors 계산 (face colors에서 평균 계산)
-                        vertex_colors = np.zeros((len(data['v_pos']), 3), dtype=np.float32)
-                        vertex_count = np.zeros(len(data['v_pos']), dtype=np.int32)
-                        
-                        # 각 face의 색상을 해당 face의 vertex에 할당
-                        for i, face in enumerate(filtered_t_pos_idx):
-                            for vertex_idx in face:
-                                vertex_colors[vertex_idx] += face_colors[i]
-                                vertex_count[vertex_idx] += 1
-                        
-                        # 평균 계산
-                        for i in range(len(vertex_colors)):
-                            if vertex_count[i] > 0:
-                                vertex_colors[i] /= vertex_count[i]
-                        
-                        # 알파 채널 추가
-                        vertex_colors_with_alpha = np.ones((len(data['v_pos']), 4), dtype=np.float32)
-                        vertex_colors_with_alpha[:, :3] = vertex_colors
-                        
-                        # data에 vertex color 추가
-                        data['v_color'] = vertex_colors_with_alpha
-                        threestudio.info(f"Added vertex colors from segmentation labels to original mesh (trees only)")
-                    else:
-                        threestudio.warn(f"Segmentation labels count ({len(seg_labels)}) doesn't match face count ({len(data['t_pos_idx'])})")
-                else:
-                    threestudio.warn(f"Segmentation labels file not found: {seg_labels_path}")
-            except Exception as e:
-                threestudio.warn(f"Failed to apply segmentation colors to original mesh: {str(e)}")
+            # 세그멘테이션 레이블 파일 경로
+            seg_labels_path = "load/shapes/seg/ruined_house.npy"
+            seg_labels = np.load(seg_labels_path)
+            # face 수가 일치하는지 확인
+            if len(seg_labels) == len(data['t_pos_idx']):
+                # 지정된 색상 맵 사용
+                color_map = np.array([
+                    [0.0, 0.0, 0.0],                # 0 : tree
+                    [1.0, 9/255.0, 224/255.0],      # 1 : house
+                    [0.0, 0.0, 0.0],                # 2 : tree
+                    [0.0, 0.0, 0.0],                # 3 : tree
+                    [1.0, 9/255.0, 224/255.0],      # 4 : house
+                    [1.0, 9/255.0, 224/255.0],      # 5 : house
+                    [1.0, 9/255.0, 224/255.0],      # 6 : house
+                    [1.0, 9/255.0, 224/255.0],      # 7 : house
+                    [1.0, 9/255.0, 224/255.0],      # 8 : house
+                    [1.0, 9/255.0, 224/255.0],      # 9 : house
+                    [0.0, 0.0, 0.0],                # 10 : tree
+                    [1.0, 9/255.0, 224/255.0],      # 11 : house
+                    [1.0, 9/255.0, 224/255.0],      # 12 : house
+                    [1.0, 9/255.0, 224/255.0],      # 13 : house
+                    [1.0, 9/255.0, 224/255.0],      # 14 : house
+                    [1.0, 9/255.0, 224/255.0],      # 15 : house
+                    [1.0, 9/255.0, 224/255.0],      # 16 : house
+                ], dtype=np.float32)
+                # 각 face에 색상 할당
+                face_colors = color_map[seg_labels]
+                # vertex colors 계산 (face colors에서 평균 계산)
+                vertex_colors = np.zeros((len(data['v_pos']), 3), dtype=np.float32)
+                vertex_count = np.zeros(len(data['v_pos']), dtype=np.int32)
+                # 각 face의 색상을 해당 face의 vertex에 할당
+                for i, face in enumerate(data['t_pos_idx']):
+                    for vertex_idx in face:
+                        vertex_colors[vertex_idx] += face_colors[i]
+                        vertex_count[vertex_idx] += 1
+                # 평균 계산
+                for i in range(len(vertex_colors)):
+                    if vertex_count[i] > 0:
+                        vertex_colors[i] /= vertex_count[i]
+                # 알파 채널 추가
+                vertex_colors_with_alpha = np.ones((len(data['v_pos']), 4), dtype=np.float32)
+                vertex_colors_with_alpha[:, :3] = vertex_colors
+                # data에 vertex color 추가
+                data['v_color'] = vertex_colors_with_alpha
+            # else:
+                # threestudio.warn(f"Segmentation labels count ({len(seg_labels)}) doesn't match face count ({len(data['t_pos_idx'])})")
             
             os.makedirs('temp', exist_ok=True)
-            
-            # tree만 필터링된 메시를 세그멘테이션 렌더링용으로 저장
-            seg_data = {
-                'v_pos': data['v_pos'],                 # 정점 위치는 원본과 동일
-                't_pos_idx': data['t_pos_idx'],         # 이미 tree만 필터링된 face indices
-                'v_color': vertex_colors_with_alpha     # 정점 색상 정보
-            }
-            
-            # 세그멘테이션 디렉토리 생성
-            seg_dir = f"{self.temp_image_save_dir}/seg"
-            os.makedirs(seg_dir, exist_ok=True)
-            
-            # 전체 메시 데이터 준비 (일반 렌더링용)
-            # 원본 데이터로 복원
-            data = original_data
-            
-            # 각 face에 색상 할당 (전체 메시)
-            face_colors = color_map[seg_labels]
-            
-            # vertex colors 계산 (face colors에서 평균 계산)
-            vertex_colors = np.zeros((len(data['v_pos']), 3), dtype=np.float32)
-            vertex_count = np.zeros(len(data['v_pos']), dtype=np.int32)
-            
-            # 각 face의 색상을 해당 face의 vertex에 할당
-            for i, face in enumerate(data['t_pos_idx']):
-                for vertex_idx in face:
-                    vertex_colors[vertex_idx] += face_colors[i]
-                    vertex_count[vertex_idx] += 1
-            
-            # 평균 계산
-            for i in range(len(vertex_colors)):
-                if vertex_count[i] > 0:
-                    vertex_colors[i] /= vertex_count[i]
-            
-            # 알파 채널 추가
-            vertex_colors_with_alpha = np.ones((len(data['v_pos']), 4), dtype=np.float32)
-            vertex_colors_with_alpha[:, :3] = vertex_colors
-            
-            # 색상 데이터 추가
-            data['v_color'] = vertex_colors_with_alpha
-            data['seg_mesh'] = seg_data  # 세그멘테이션용 메시 데이터를 함께 전달
-            
-            # 모든 데이터를 포함한 피클 저장
             pkl_path = 'temp/render_fixview_temp.pkl'
             with open(pkl_path, 'wb') as f:
                 pickle.dump(data, f)
             
-            # Blender 한 번만 실행 (모든 렌더링 동시에)
+            # 별도의 세그멘테이션 모델 파일을 사용하지 않음 - 원본 메시에 색상 적용
             cmd = f'blender -b -P ./threestudio/data/blender_script_fixview.py -- --param_dir {pkl_path} --env_dir {envmap_dir} --output_dir {self.temp_image_save_dir} --num_images {self.cfg.fix_view_num}'
             print(cmd)
             print("pre-rendering light conditions...please wait for about 15min")
-            
             # Execute the command and capture output
             process = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             # Check return code
@@ -690,17 +616,7 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
             else:
                 print("rendering done")
 
-        def loadrgb(imgpath,dim):
-            import numpy as np  # numpy를 함수 내에서 임포트
-            img = cv2.imread(imgpath,cv2.IMREAD_UNCHANGED)
-            img = cv2.resize(img, dim, interpolation = cv2.INTER_AREA)
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-            img = img.astype(np.float32) / 255.0
-            return img
-
         def loaddepth(imgpath,dim):
-            import numpy as np  # numpy를 함수 내에서 임포트
             depth = cv2.imread(imgpath, cv2.IMREAD_ANYDEPTH)/1000
             # Check if image loading failed
             if depth is None:
@@ -727,6 +643,7 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
         self.depths = torch.zeros((128,self.height,self.width,1))
         self.normals = torch.ones((128,self.height,self.width,3))
         self.lightmaps = torch.zeros((128,5,self.height,self.width,18))
+
         self.segs = torch.ones((128,self.height,self.width,3)) # 세그멘테이션 텐서 초기화
 
         dim = (self.width, self.height)
@@ -737,14 +654,8 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
             
             self.depths[view_idx] = torch.from_numpy(loaddepth(depth_path, dim))
             self.normals[view_idx] = torch.from_numpy(loadrgb(normal_path, dim))
-            
-            seg_img = loadrgb(seg_path, dim)
-            if view_idx == 0:  # 첫 번째 뷰에 대해서만 로깅
-                threestudio.info(f"Successfully loaded seg image: shape={seg_img.shape}, range=[{seg_img.min()}, {seg_img.max()}]")
-                import numpy as np  # numpy 명시적 임포트 추가
-                unique_colors = np.unique(seg_img.reshape(-1, 3), axis=0)
-            self.segs[view_idx] = torch.from_numpy(seg_img)
-                
+            self.segs[view_idx] = torch.from_numpy(loadrgb(seg_path, dim))
+
             for env_idx in range(1,6):
                 light_path_m0r0 =    self.temp_image_save_dir+"/light/"+f"{view_idx:03d}_m0.0r0.0_env"+str(env_idx)+".png"
                 light_path_m0rhalf = self.temp_image_save_dir+"/light/"+f"{view_idx:03d}_m0.0r0.5_env"+str(env_idx)+".png"
@@ -979,7 +890,8 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
         cur_depth = self.depths[view_id,...]
         cur_normal = self.normals[view_id,...]
         cur_light = self.lightmaps[view_id,env_id,...]
-        cur_seg = self.segs[view_id,...]  # Segmentation Map
+
+        cur_seg = self.segs[view_id,...] # Segmentation Map
 
         condition_map = torch.cat((cur_depth,cur_normal,cur_light),-1) # (H, W, 22)
 
@@ -1000,14 +912,17 @@ class FixCameraIterableDataset(IterableDataset, Updateable):
             "height": self.height,
             "width": self.width,
             "condition_map":condition_map,
-            "cond_seg":cur_seg
+            "cond_seg":cur_seg,
         }
 
 class RandomCameraDataset(Dataset):
-    def __init__(self, cfg: Any, split: str) -> None:
+    def __init__(self, cfg: Any, split: str, mesh, prerender_dir) -> None:
         super().__init__()
         self.cfg: RandomCameraDataModuleConfig = cfg
         self.split = split
+        self.mesh = mesh
+        self.prerender_dir = prerender_dir
+        self.rendered_seg_dir = os.path.join(self.prerender_dir, f'{self.split}_seg')
 
         if split == "val":
             self.n_views = self.cfg.n_val_views
@@ -1098,6 +1013,18 @@ class RandomCameraDataset(Dataset):
         self.elevation, self.azimuth = elevation, azimuth
         self.elevation_deg, self.azimuth_deg = elevation_deg, azimuth_deg
         self.camera_distances = camera_distances
+        self.fovy = fovy
+        self.fovy_deg = fovy_deg
+
+        if self.split in ["val", "test"] and self.cfg.blender_generate:
+            self.prerender_segmentation_images()
+
+        # Pre-load all rendered segmentation images if they exist
+        self.preloaded_segs = []
+        for i in range(self.n_views):
+            seg_path = os.path.join(self.rendered_seg_dir, 'seg', f'{i:03d}.png')
+            seg_img = loadrgb(seg_path, (self.cfg.eval_width, self.cfg.eval_height))
+            self.preloaded_segs.append(torch.from_numpy(seg_img))
 
     def __len__(self):
         return self.n_views
@@ -1118,14 +1045,70 @@ class RandomCameraDataset(Dataset):
             "azimuth": self.azimuth_deg[index],
             "camera_distances": self.camera_distances[index],
             "height": self.cfg.eval_height,
-            "width": self.cfg.eval_width
+            "width": self.cfg.eval_width,
+            "cond_seg": self.preloaded_segs[index]
         }
 
     def collate(self, batch):
         batch = torch.utils.data.default_collate(batch)
         batch.update({"height": self.cfg.eval_height, "width": self.cfg.eval_width})
         return batch
+    
+    def prerender_segmentation_images(self):
+        envmap_dir = "load/lights/envmap"
+        os.makedirs(self.rendered_seg_dir, exist_ok=True)
+        os.makedirs(os.path.join(self.rendered_seg_dir, 'seg'), exist_ok=True)
+        data = {}
+        data['v_pos'] = self.mesh.v_pos.cpu().numpy()
+        data['t_pos_idx'] = self.mesh.t_pos_idx.cpu().numpy()
+        data['width'] = self.cfg.eval_width
+        data['height'] = self.cfg.eval_height
+        data['focal_length'] = (0.5 * self.cfg.eval_height / torch.tan(0.5 * self.fovy)).cpu().numpy()
+        data['c2w'] = self.c2w.cpu().numpy()
+        if hasattr(self.mesh, 'v_color') and self.mesh.v_color is not None: data['v_color'] = self.mesh.v_color.cpu().numpy()
 
+        seg_labels_path = "load/shapes/seg/ruined_house.npy"
+        seg_labels = np.load(seg_labels_path)
+        if len(seg_labels) == len(data['t_pos_idx']):
+            color_map = np.array([
+                [0.0, 0.0, 0.0],                # 0 : tree
+                [1.0, 9/255.0, 224/255.0],      # 1 : house
+                [0.0, 0.0, 0.0],                # 2 : tree
+                [0.0, 0.0, 0.0],                # 3 : tree
+                [1.0, 9/255.0, 224/255.0],      # 4 : house
+                [1.0, 9/255.0, 224/255.0],      # 5 : house
+                [1.0, 9/255.0, 224/255.0],      # 6 : house
+                [1.0, 9/255.0, 224/255.0],      # 7 : house
+                [1.0, 9/255.0, 224/255.0],      # 8 : house
+                [1.0, 9/255.0, 224/255.0],      # 9 : house
+                [0.0, 0.0, 0.0],                # 10 : tree
+                [1.0, 9/255.0, 224/255.0],      # 11 : house
+                [1.0, 9/255.0, 224/255.0],      # 12 : house
+                [1.0, 9/255.0, 224/255.0],      # 13 : house
+                [1.0, 9/255.0, 224/255.0],      # 14 : house
+                [1.0, 9/255.0, 224/255.0],      # 15 : house
+                [1.0, 9/255.0, 224/255.0],      # 16 : house
+            ], dtype=np.float32)
+            face_colors = color_map[seg_labels]
+            vertex_colors = np.zeros((len(data['v_pos']), 3), dtype=np.float32)
+            vertex_count = np.zeros(len(data['v_pos']), dtype=np.int32)
+            for face_idx, face in enumerate(data['t_pos_idx']):
+                for vertex_idx in face:
+                    vertex_colors[vertex_idx] += face_colors[face_idx]
+                    vertex_count[vertex_idx] += 1
+            for v_idx in range(len(vertex_colors)):
+                if vertex_count[v_idx] > 0:
+                    vertex_colors[v_idx] /= vertex_count[v_idx]
+            vertex_colors_with_alpha = np.ones((len(data['v_pos']), 4), dtype=np.float32)
+            vertex_colors_with_alpha[:, :3] = vertex_colors
+            data['v_color'] = vertex_colors_with_alpha
+        pkl_path = os.path.join(self.rendered_seg_dir, f'render_seg_params.pkl')
+        with open(pkl_path, 'wb') as f:
+            pickle.dump(data, f)
+        cmd = f'blender -b -P ./threestudio/data/blender_script_fixview.py -- --param_dir {pkl_path} --env_dir {envmap_dir} --output_dir {self.rendered_seg_dir} --num_images {self.n_views} --test_seg True'
+        process = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        if process.returncode != 0:
+            pass
 
 @register("random-camera-datamodule")
 class RandomCameraDataModule(pl.LightningDataModule):
@@ -1145,9 +1128,9 @@ class RandomCameraDataModule(pl.LightningDataModule):
             else:
                 self.train_dataset = RandomCameraIterableDataset(self.cfg)
         if stage in [None, "fit", "validate"]:
-            self.val_dataset = RandomCameraDataset(self.cfg, "val")
+            self.val_dataset = RandomCameraDataset(self.cfg, "val", self.mesh, self.prerender_dir)
         if stage in [None, "test", "predict"]:
-            self.test_dataset = RandomCameraDataset(self.cfg, "test")
+            self.test_dataset = RandomCameraDataset(self.cfg, "test", self.mesh, self.prerender_dir)
 
     def prepare_data(self):
         pass

@@ -31,6 +31,7 @@ parser.add_argument("--engine", type=str, default="CYCLES", choices=["CYCLES", "
 parser.add_argument("--camera_type", type=str, default='fixed')
 parser.add_argument("--num_images", type=int, required=True)
 parser.add_argument("--device", type=str, default='CUDA')
+parser.add_argument("--test_seg", type=bool, default=False, help='Only render segmentation images (bool)')
 
 
 argv = sys.argv[sys.argv.index("--") + 1 :]
@@ -314,13 +315,13 @@ def save_images(object_file: str) -> None:
     depthdir=os.path.join(args.output_dir,"depth")
     normaldir=os.path.join(args.output_dir,"normal")
     segdir = os.path.join(args.output_dir, "seg")
-
-    if not os.path.exists(lightdir): Path(lightdir).mkdir(exist_ok=True, parents=True)
-    if not os.path.exists(promptdir): Path(promptdir).mkdir(exist_ok=True, parents=True)
-    if not os.path.exists(depthdir): Path(depthdir).mkdir(exist_ok=True, parents=True)
-    if not os.path.exists(normaldir): Path(normaldir).mkdir(exist_ok=True, parents=True)
-    if args.seg_model_path and not os.path.exists(segdir):
-        Path(segdir).mkdir(exist_ok=True, parents=True)
+    if not args.test_seg:
+        if not os.path.exists(lightdir): Path(lightdir).mkdir(exist_ok=True, parents=True)
+        if not os.path.exists(promptdir): Path(promptdir).mkdir(exist_ok=True, parents=True)
+        if not os.path.exists(depthdir): Path(depthdir).mkdir(exist_ok=True, parents=True)
+        if not os.path.exists(normaldir): Path(normaldir).mkdir(exist_ok=True, parents=True)
+    
+    if not os.path.exists(segdir): Path(segdir).mkdir(exist_ok=True, parents=True)
 
     param = read_pickle(object_file)
     reset_scene()
@@ -337,86 +338,7 @@ def save_images(object_file: str) -> None:
 
     # 세그멘테이션 처리 - 방법 2로 통일 (원본 메시의 정점 색상 사용)
     seg_obj = None
-    if 'seg_mesh' in param:
-        # 세그멘테이션용 메시 데이터가 존재하는 경우 (tree만 포함된 메시)
-        try:
-            print("Using pre-filtered mesh data for segmentation (trees only)")
-            seg_data = param['seg_mesh']
-            
-            # 새 세그멘테이션 메시 생성
-            seg_mesh = bpy.data.meshes.new("seg_mesh")
-            seg_obj = bpy.data.objects.new("SegmentationMesh", seg_mesh)
-            bpy.context.collection.objects.link(seg_obj)
-            
-            # 세그멘테이션 메시 데이터 업데이트
-            seg_mesh.from_pydata(seg_data['v_pos'],[],seg_data['t_pos_idx'])
-            seg_mesh.update()
-            
-            # 정점 색상 설정
-            if 'v_color' in seg_data and seg_obj is not None:
-                if not seg_obj.data.vertex_colors:
-                    seg_obj.data.vertex_colors.new(name="Col")
-                
-                color_layer = seg_obj.data.vertex_colors["Col"]
-                v_colors = seg_data['v_color']
-                
-                if v_colors.shape[1] >= 3:  # RGB 값 최소 필요
-                    mesh = seg_obj.data
-                    # 각 폴리곤(face)를 순회
-                    for poly_idx, poly in enumerate(mesh.polygons):
-                        # 해당 폴리곤을 구성하는 인덱스 순회
-                        for loop_idx in range(poly.loop_start, poly.loop_start + poly.loop_total):
-                            vertex_idx = mesh.loops[loop_idx].vertex_index
-                            # v_colors에서 색상을 가져와 색상 레이어에 할당
-                            if vertex_idx < len(v_colors):
-                                color_layer.data[loop_idx].color = (
-                                    v_colors[vertex_idx][0],
-                                    v_colors[vertex_idx][1],
-                                    v_colors[vertex_idx][2],
-                                    1.0 if v_colors.shape[1] < 4 else v_colors[vertex_idx][3]
-                                )
-            
-            # 스무스 설정
-            for polygon in seg_mesh.polygons:
-                polygon.use_smooth = True
-            seg_obj.data.update()
-            
-            # 세그멘테이션 마테리얼 생성
-            seg_mat = bpy.data.materials.new(name="SegmentationMaterial")
-            seg_mat.use_nodes = True
-            seg_tree = seg_mat.node_tree
-            seg_nodes = seg_tree.nodes
-            
-            # 기본 노드 제거
-            for node in seg_nodes:
-                seg_nodes.remove(node)
-            
-            # Emission 노드와 Material Output 노드 추가
-            emission_node = seg_nodes.new(type='ShaderNodeEmission')
-            output_node = seg_nodes.new(type='ShaderNodeOutputMaterial')
-            
-            # 정점 색상 노드 추가
-            vc_node = seg_nodes.new(type='ShaderNodeVertexColor')
-            vc_node.layer_name = "Col"  # 생성한 정점 색상 레이어 사용
-            
-            # 노드 연결
-            seg_tree.links.new(vc_node.outputs['Color'], emission_node.inputs['Color'])
-            seg_tree.links.new(emission_node.outputs['Emission'], output_node.inputs['Surface'])
-            
-            # 복제된 객체에 세그멘테이션 마테리얼 할당
-            if seg_obj.data.materials:
-                seg_obj.data.materials[0] = seg_mat
-            else:
-                seg_obj.data.materials.append(seg_mat)
-            
-            # 세그멘테이션 객체 초기 렌더링 숨김
-            seg_obj.hide_render = True
-            
-            print("Successfully set up segmentation with pre-filtered tree mesh")
-        except Exception as e:
-            print(f"Error setting up segmentation mesh: {e}")
-            # 세그멘테이션 없이 계속 진행
-    elif 'v_color' in param and obj_1 is not None:
+    if 'v_color' in param and obj_1 is not None:
         try:
             print("Applying vertex colors from pickle data to original mesh for segmentation")
             # 정점 색상 레이어 생성
@@ -624,8 +546,6 @@ def save_images(object_file: str) -> None:
     original_bg_strength = back_node.inputs['Strength'].default_value
 
     for i in range(args.num_images):
-        # set camera
-        # print(f"Rendering image {i+1}/{args.num_images}")
         lens_scale = render.resolution_x / cam.data.sensor_width
         cam.data.lens = float(param['focal_length'].flatten()[i])/lens_scale# focus_length transorm
         camera.matrix_world = Matrix(cam_poses[i])
@@ -635,51 +555,44 @@ def save_images(object_file: str) -> None:
         if seg_obj:
             seg_obj.hide_render = True
 
-        # output depth image
-        bpy.context.scene.view_settings.view_transform = "Raw"
-        render.image_settings.color_mode = "BW"
-        render.image_settings.color_depth = "16"
-        tree.links.new(output_depth_slot, composite_node.inputs[0])
-        render_path = os.path.join(depthdir,f"{i:03d}.png")
-        scene.render.filepath = os.path.abspath(render_path)
-        bpy.ops.render.render(write_still=True)
+        if not args.test_seg:
+            # output depth image
+            bpy.context.scene.view_settings.view_transform = "Raw"
+            render.image_settings.color_mode = "BW"
+            render.image_settings.color_depth = "16"
+            tree.links.new(output_depth_slot, composite_node.inputs[0])
+            render_path = os.path.join(depthdir,f"{i:03d}.png")
+            scene.render.filepath = os.path.abspath(render_path)
+            bpy.ops.render.render(write_still=True)
 
-        # output normal image
-        view_matrix= calc_view_matrix(camera)
-        vn0.outputs[0].default_value = view_matrix[0]
-        vn1.outputs[0].default_value = view_matrix[1]
-        vn2.outputs[0].default_value = view_matrix[2]
+            # output normal image
+            view_matrix= calc_view_matrix(camera)
+            vn0.outputs[0].default_value = view_matrix[0]
+            vn1.outputs[0].default_value = view_matrix[1]
+            vn2.outputs[0].default_value = view_matrix[2]
 
-        render.image_settings.color_mode = "RGB"
-        render.image_settings.color_depth = "8"
-        tree.links.new(node_group.outputs["viewNormal"], composite_node.inputs[0])
-        render_path = os.path.join(normaldir,f"{i:03d}.png")
-        scene.render.filepath = os.path.abspath(render_path)
-        bpy.ops.render.render(write_still=True)
+            render.image_settings.color_mode = "RGB"
+            render.image_settings.color_depth = "8"
+            tree.links.new(node_group.outputs["viewNormal"], composite_node.inputs[0])
+            render_path = os.path.join(normaldir,f"{i:03d}.png")
+            scene.render.filepath = os.path.abspath(render_path)
+            bpy.ops.render.render(write_still=True)
 
         # --- Render Segmentation Map if seg_obj exists ---
         if seg_obj:
-            # print(f"Rendering segmentation map {i+1}/{args.num_images}")
-            # Hide original object, show segmentation object
             obj_1.hide_render = True
             seg_obj.hide_render = False
 
-            # Set render settings for segmentation (emission only)
-            bpy.context.scene.view_settings.view_transform = 'Raw' # Use Raw to avoid color management
-            render.image_settings.color_mode = 'RGB' # Output color
+            bpy.context.scene.view_settings.view_transform = 'Raw'
+            render.image_settings.color_mode = 'RGB'
             render.image_settings.color_depth = '8'
-            scene.render.film_transparent = True # Transparent background
-            scene.cycles.samples = 1 # Need minimal samples for emission
-            scene.cycles.max_bounces = 0 # No light bounces needed
+            scene.render.film_transparent = True
+            scene.cycles.samples = 1
+            scene.cycles.max_bounces = 0
 
-            # Set world background to black and strength 0
             back_node.inputs['Color'].default_value = (0, 0, 0, 1)
             back_node.inputs['Strength'].default_value = 0.0
 
-            # Use simple composite link for direct color output
-            # Disconnect depth/normal nodes if necessary, connect Emission material output directly
-            # Assuming the render layer outputs the emission pass directly when set up like this.
-            # We connect the main image output which should now be the emission colors.
             if composite_node.inputs['Image'].is_linked:
                  tree.links.remove(composite_node.inputs['Image'].links[0])
             tree.links.new(render_layer.outputs["Image"], composite_node.inputs[0])
@@ -688,55 +601,47 @@ def save_images(object_file: str) -> None:
             scene.render.filepath = os.path.abspath(render_path)
             bpy.ops.render.render(write_still=True)
 
-            # Restore object visibility
             obj_1.hide_render = False
-            seg_obj.hide_render = True # Hide it again for subsequent light renders
+            seg_obj.hide_render = True
 
-            # Restore original render settings
             scene.render.film_transparent = original_film_transparent
             scene.cycles.samples = original_cycles_samples
-            scene.cycles.max_bounces = original_max_bounces # Restore bounces
+            scene.cycles.max_bounces = original_max_bounces
             back_node.inputs['Color'].default_value = original_bg_color
             back_node.inputs['Strength'].default_value = original_bg_strength
-            # Compositor link will be reset before the light renders below
 
-    # Restore settings before light rendering loop
-    bpy.context.scene.view_settings.view_transform = original_view_transform
-    render.image_settings.color_mode = original_color_mode
-    render.image_settings.color_depth = original_color_depth
-    # Ensure the main image is connected for light rendering
-    if composite_node.inputs['Image'].is_linked:
-        tree.links.remove(composite_node.inputs['Image'].links[0])
-    tree.links.new(render_layer.outputs["Image"], composite_node.inputs[0])
+    if not args.test_seg:
+        # Restore settings before light rendering loop
+        bpy.context.scene.view_settings.view_transform = original_view_transform
+        render.image_settings.color_mode = original_color_mode
+        render.image_settings.color_depth = original_color_depth
+        if composite_node.inputs['Image'].is_linked:
+            tree.links.remove(composite_node.inputs['Image'].links[0])
+        tree.links.new(render_layer.outputs["Image"], composite_node.inputs[0])
 
-    # Ensure correct object visibility for light renders
-    obj_1.hide_render = False
-    if seg_obj:
-        seg_obj.hide_render = True
+        obj_1.hide_render = False
+        if seg_obj:
+            seg_obj.hide_render = True
 
-    # Restore world background color/strength explicitly before light rendering loop if needed
-    back_node.inputs['Color'].default_value = original_bg_color
-    back_node.inputs['Strength'].default_value = original_bg_strength
+        back_node.inputs['Color'].default_value = original_bg_color
+        back_node.inputs['Strength'].default_value = original_bg_strength
 
-    for env in range(0,5):
-        env_map = bpy.data.images.load(os.path.join(map_path,'map'+str(env+1), 'map'+str(env+1)+".exr"))
-        env_texture_node.image = env_map
-        # Restore background strength for environment map
-        back_node.inputs['Strength'].default_value = 1.0 # Or original strength if it wasn't 1
+        for env in range(0,5):
+            env_map = bpy.data.images.load(os.path.join(map_path,'map'+str(env+1), 'map'+str(env+1)+".exr"))
+            env_texture_node.image = env_map
+            back_node.inputs['Strength'].default_value = 1.0
 
-        for i in range(args.num_images):
-            # set camera
-            # print(f"Rendering light image {i+1}/{args.num_images}, Env {env+1}/5")
-            lens_scale = render.resolution_x / cam.data.sensor_width
-            cam.data.lens = float(param['focal_length'].flatten()[i])/lens_scale# focus_length transorm
-            camera.matrix_world = Matrix(cam_poses[i])
+            for i in range(args.num_images):
+                lens_scale = render.resolution_x / cam.data.sensor_width
+                cam.data.lens = float(param['focal_length'].flatten()[i])/lens_scale
+                camera.matrix_world = Matrix(cam_poses[i])
 
-            for j in range(len(mat_list)):
-                render_path = os.path.join(lightdir,f"{i:03d}_m"+str(mat_list[j][0])+"r"+str(mat_list[j][1])+"_env"+str(env+1)+".png")
-                mat.node_tree.nodes['Principled BSDF'].inputs['Metallic'].default_value = mat_list[j][0]
-                mat.node_tree.nodes['Principled BSDF'].inputs['Roughness'].default_value = mat_list[j][1]
-                scene.render.filepath = os.path.abspath(render_path)
-                bpy.ops.render.render(write_still=True)
+                for j in range(len(mat_list)):
+                    render_path = os.path.join(lightdir,f"{i:03d}_m"+str(mat_list[j][0])+"r"+str(mat_list[j][1])+"_env"+str(env+1)+".png")
+                    mat.node_tree.nodes['Principled BSDF'].inputs['Metallic'].default_value = mat_list[j][0]
+                    mat.node_tree.nodes['Principled BSDF'].inputs['Roughness'].default_value = mat_list[j][1]
+                    scene.render.filepath = os.path.abspath(render_path)
+                    bpy.ops.render.render(write_still=True)
 
 
         
